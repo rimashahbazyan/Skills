@@ -15,9 +15,9 @@
 executor: local
 
 containers:
-  trtllm: nvcr.io/nvidia/tensorrt-llm/release:1.0.0
-  vllm: vllm/vllm-openai:v0.10.1.1
-  sglang: lmsysorg/sglang:v0.5.4
+  trtllm: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc1
+  vllm: dockerfile:dockerfiles/Dockerfile.vllm
+  sglang: lmsysorg/sglang:v0.5.8
   # dockerfile: for now can only specify relative to repo root
   megatron: dockerfile:dockerfiles/Dockerfile.megatron
   sandbox: dockerfile:dockerfiles/Dockerfile.sandbox
@@ -29,13 +29,11 @@ containers:
 # the code is mounted automatically inside /nemo_run/code
 # but please note that we only package what's tracked by git + jsonl files inside nemo_skills/dataset
 
-# mounts:
-# you can define as many as you need, e.g.
-#   - /mnt/datadrive/models:/models
-#   - /mnt/datadrive/data:/data
-#   - /home/<username>/workspace:/workspace
-#   you can also override container libraries by directly mounting over them. E.g. to override NeMo-RL do
-#   - <...>/NeMo-RL:/opt/NeMo-RL
+mounts:
+  - /tmp:/tmp
+
+env_vars:
+  - HF_HOME=/tmp/hf-home
 
 # define any environment variables. Note that HF_HOME is required by default and needs to be a mounted path!
 # env_vars:

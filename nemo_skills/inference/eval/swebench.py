@@ -26,6 +26,8 @@ from pathlib import Path
 
 import hydra
 import tomlkit
+import yaml
+from omegaconf import OmegaConf
 
 from nemo_skills.inference.generate import GenerationTask
 from nemo_skills.inference.model import server_params
@@ -43,11 +45,11 @@ LOG = logging.getLogger(get_logger_name(__file__))
 class SupportedAgentFrameworks(str, Enum):
     swe_agent = "swe_agent"
     openhands = "openhands"
+    mini_swe_agent = "mini_swe_agent"
 
 
 # Like nemo_skills.inference.generate.InferenceConfig, except most parameters are not passed by default
-# because they may not be supported by all LLM servers or agent frameworks.
-# tokens_to_generate is purposefully unlimited by default for SWE-bench.
+# because they may not be supported by all LLM servers.
 @nested_dataclass(kw_only=True)
 class SweBenchInferenceConfig:
     temperature: float = 0.0  # Temperature of 0 means greedy decoding
@@ -58,6 +60,8 @@ class SweBenchInferenceConfig:
     tokens_to_generate: int | None = None
     repetition_penalty: float | None = None
     top_logprobs: int | None = None
+
+    extra_body: dict = field(default_factory=dict)  # Any other extra params passed with extra_body argument
 
 
 # Converts the parameter names above to the corresponding OpenAI parameter names.
@@ -77,11 +81,11 @@ NS_TO_OPENAI_PARAM = {
 # Converts the parameter names above to the corresponding parameters in OpenHands's LLM config.
 # https://github.com/All-Hands-AI/OpenHands/blob/main/openhands/core/config/llm_config.py#L12
 NS_TO_OPENHANDS_PARAM = {
-    # Supported on OpenHands's side. top_k is not OpenAI-compatible and so may break some servers.
+    # Passed as dedicated parameters.
     "tokens_to_generate": "max_output_tokens",
     "top_k": "top_k",
     "random_seed": "seed",
-    # Not supported by OpenHands. Nemo-Skills will raise an error if they are passed.
+    # Passed via the completion_kwargs parameter.
     "min_p": None,
     "repetition_penalty": None,
     "top_logprobs": None,
@@ -247,7 +251,30 @@ class SweBenchGenerationTask(GenerationTask):
                 # make venv & install swe-agent dependencies
                 "uv venv --python 3.12 --managed-python venv && "
                 "source venv/bin/activate && "
-                "uv pip install -e ."
+                "uv pip install -e . && "
+                # force downgrade rich - newer versions cause the swe-agent logger to hang in some instances
+                "uv pip install rich==14.2.0"
+            )
+
+        elif self.cfg.agent_framework == SupportedAgentFrameworks.mini_swe_agent:
+            if self.cfg.agent_framework_repo is None:
+                self.cfg.agent_framework_repo = "https://github.com/SWE-agent/mini-swe-agent.git"
+            if self.cfg.agent_framework_commit is None:
+                self.cfg.agent_framework_commit = "v2.0"
+            setup_commands.append(
+                # clone the swe-agent repo
+                "rm -rf /root/mini-swe-agent && "
+                f"git clone {self.cfg.agent_framework_repo} /root/mini-swe-agent && "
+                "cd /root/mini-swe-agent && "
+                # Bypass the interactive setup wizard by pointing to the default config
+                "export MSWEA_MINI_CONFIG_PATH=/root/mini-swe-agent/src/minisweagent/config/benchmarks/swebench.yaml && "
+                f"git checkout {self.cfg.agent_framework_commit} && "
+                # make venv & install mini-swe-agent dependencies
+                "uv venv --python 3.12 --managed-python venv && "
+                "source venv/bin/activate && "
+                "uv pip install -e . && "
+                # force downgrade rich - newer versions cause the swe-agent logger to hang in some instances
+                "uv pip install rich==14.2.0"
             )
 
         elif self.cfg.agent_framework == SupportedAgentFrameworks.openhands:
@@ -472,8 +499,11 @@ class SweBenchGenerationTask(GenerationTask):
             for ns_param, openai_param in NS_TO_OPENAI_PARAM.items()
             if getattr(self.cfg.inference, ns_param) is not None
         }
+        completion_kwargs.update(OmegaConf.to_container(self.cfg.inference.extra_body, resolve=True))
         if "top_logprobs" in completion_kwargs:
             completion_kwargs["logprobs"] = True
+        if "reasoning_effort" in completion_kwargs:
+            completion_kwargs["allowed_openai_params"] = ["reasoning_effort"]
 
         # Variables that will be available in prompt templates
         extra_fields = {}
@@ -525,6 +555,102 @@ class SweBenchGenerationTask(GenerationTask):
 
         return pred_jsonl_file
 
+    async def _run_mini_swe_agent(self, data_point, api_base):
+        """
+        Runs mini-swe-agent on one instance.
+        Returns the absolute (not mounted) path to a .jsonl file in the SWE-bench evaluation format.
+        """
+        completion_kwargs = {
+            openai_param: getattr(self.cfg.inference, ns_param)
+            for ns_param, openai_param in NS_TO_OPENAI_PARAM.items()
+            if getattr(self.cfg.inference, ns_param) is not None
+        }
+        completion_kwargs.update(OmegaConf.to_container(self.cfg.inference.extra_body, resolve=True))
+        if "top_logprobs" in completion_kwargs:
+            completion_kwargs["logprobs"] = True
+        if "reasoning_effort" in completion_kwargs:
+            completion_kwargs["allowed_openai_params"] = ["reasoning_effort"]
+
+        base_config_path = get_config_path(self.cfg.agent_config or "eval/swe-bench/mini-swe-agent/swebench")
+        with open(base_config_path, "r") as f:
+            full_config = yaml.safe_load(f)
+
+        if "agent" not in full_config:
+            full_config["agent"] = {}
+        full_config["agent"]["step_limit"] = self.cfg.agent_max_turns
+
+        if "model" not in full_config:
+            full_config["model"] = {}
+        if "model_kwargs" not in full_config["model"]:
+            full_config["model"]["model_kwargs"] = {}
+
+        full_config["model"]["model_kwargs"].update(
+            {
+                **completion_kwargs,
+                "api_base": api_base,
+                "temperature": self.cfg.inference.temperature,
+                "top_p": self.cfg.inference.top_p,
+            }
+        )
+
+        (self.output_dir / "configs").mkdir(parents=True, exist_ok=True)
+        tmp_config_filename = f"configs/config_{data_point['instance_id']}.yaml"
+        host_tmp_path = os.path.join(self.output_dir, tmp_config_filename)
+
+        # Inside the container, this path maps to /trajectories_mount/
+        container_tmp_path = os.path.join("/trajectories_mount", tmp_config_filename)
+
+        with open(host_tmp_path, "w") as f:
+            yaml.dump(full_config, f)
+
+        try:
+            mini_swe_agent_cmd = (
+                "cp -r /root_mount/mini-swe-agent /root && "
+                "cp -r /root_mount/uv /root && "
+                "cd /root/mini-swe-agent && "
+                "export MSWEA_CONFIGURED=true && "
+                f"export MSWEA_MINI_CONFIG_PATH={container_tmp_path} && "
+                f"/root/mini-swe-agent/venv/bin/python -m minisweagent.run.mini "
+                f"--config {container_tmp_path} "
+                f"--model hosted_vllm/{self.cfg.server.model} "
+                f"--task {shlex.quote(data_point['problem_statement'])} "
+                f"--output trajectories/{data_point['instance_id']}.traj.json "
+                f"--yolo "
+                f"--exit-immediately && "
+                "mkdir -p /trajectories_mount/trajectories && cp -r trajectories/* /trajectories_mount/trajectories/"
+            )
+
+            # Execute mini-swe-agent command
+            search_path = os.path.join(self.output_dir, "trajectories", f"{data_point['instance_id']}.traj.json")
+
+            pred_file = await self._execute_container_command(
+                data_point, mini_swe_agent_cmd, search_path, mode="agent"
+            )
+
+            with open(pred_file, "r") as f:
+                trajectory_dict = json.loads(f.read().strip())
+
+            pred_jsonl_file = pred_file.replace(".traj.json", ".jsonl")
+            with open(pred_jsonl_file, "w") as f:
+                trajectory_info = trajectory_dict.get("info", {})
+                trajectory_info["model_name_or_path"] = self.cfg.server.model
+                trajectory_info["instance_id"] = data_point["instance_id"]
+
+                patch = trajectory_info.pop("submission", None)
+                if not patch:
+                    patch = None
+                elif not patch.endswith("\n"):
+                    patch += "\n"
+                trajectory_info["model_patch"] = patch
+
+                f.write(json.dumps(trajectory_info))
+
+            return pred_jsonl_file
+
+        finally:
+            if os.path.exists(host_tmp_path):
+                os.remove(host_tmp_path)
+
     async def _run_openhands(self, data_point, api_base):
         """
         Runs OpenHands on one instance.
@@ -544,17 +670,26 @@ class SweBenchGenerationTask(GenerationTask):
             "temperature": self.cfg.inference.temperature,
             "top_p": self.cfg.inference.top_p,
         }
+        completion_kwargs = {}
 
         for ns_param, oh_param in NS_TO_OPENHANDS_PARAM.items():
-            if getattr(self.cfg.inference, ns_param) is not None:
+            param_value = getattr(self.cfg.inference, ns_param)
+            if param_value is not None:
                 if oh_param is not None:
-                    config["llm"]["model"][oh_param] = getattr(self.cfg.inference, ns_param)
+                    config["llm"]["model"][oh_param] = param_value
                 else:
-                    supported_params = [key for key, value in NS_TO_OPENHANDS_PARAM.items() if value is not None]
-                    raise ValueError(
-                        f"Inference parameter {ns_param} is not supported by OpenHands. "
-                        f"Supported inference parameters: temperature, top_p, {', '.join(supported_params)}."
-                    )
+                    # If oh_param is None, that means there is no dedicated OH config option for this parameter,
+                    # so we need to pass it via the completion_kwargs option.
+                    completion_kwargs[NS_TO_OPENAI_PARAM[ns_param]] = param_value
+
+        completion_kwargs.update(OmegaConf.to_container(self.cfg.inference.extra_body, resolve=True))
+        if "top_logprobs" in completion_kwargs:
+            completion_kwargs["logprobs"] = True
+        if "reasoning_effort" in completion_kwargs:
+            completion_kwargs["allowed_openai_params"] = ["reasoning_effort"]
+
+        if completion_kwargs:
+            config["llm"]["model"]["completion_kwargs"] = completion_kwargs
 
         config_str = tomlkit.dumps(config)
 
@@ -654,8 +789,13 @@ class SweBenchGenerationTask(GenerationTask):
             )
         return pred_file
 
-    async def process_single_datapoint(self, data_point, data):
+    async def process_single_datapoint(self, data_point, data, prompt_format=None):
         """Will do all necessary generations to get a single answer for the data point."""
+        async with self.semaphore:
+            return await self._process_single_datapoint_impl(data_point, data)
+
+    async def _process_single_datapoint_impl(self, data_point, data):
+        """Implementation of process_single_datapoint, called within semaphore."""
 
         # TODO: what's the right way to support api models, so that our standard parameters for that can be used?
         # TODO: use self.cfg.server.base_url, etc. Can we pass in API key?
@@ -667,6 +807,8 @@ class SweBenchGenerationTask(GenerationTask):
 
         if self.cfg.agent_framework == SupportedAgentFrameworks.swe_agent:
             pred_file = await self._run_swe_agent(data_point, api_base)
+        elif self.cfg.agent_framework == SupportedAgentFrameworks.mini_swe_agent:
+            pred_file = await self._run_mini_swe_agent(data_point, api_base)
         elif self.cfg.agent_framework == SupportedAgentFrameworks.openhands:
             pred_file = await self._run_openhands(data_point, api_base)
         else:

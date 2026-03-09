@@ -99,6 +99,7 @@ def format_entry(entry, category):
         "subcategory": category,
         "source": entry["source"],
         **get_mcq_fields(entry["question"], entry["choices"]),
+        "question_no_options": entry["question"],
     }
 
 

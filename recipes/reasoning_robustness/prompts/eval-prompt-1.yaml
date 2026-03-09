@@ -1,0 +1,6 @@
+user: |-
+  Solve the following problem. Make sure to put the answer (and only answer) inside \boxed{{}}.
+
+  {noise} {question_no_options}
+
+  {options}

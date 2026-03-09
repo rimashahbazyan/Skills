@@ -57,6 +57,8 @@ def format_entry(entry):
             else None
         ),
         **get_mcq_fields(entry["Question"], choices),
+        "question_no_options": entry["Question"],
+
     }
 
 
