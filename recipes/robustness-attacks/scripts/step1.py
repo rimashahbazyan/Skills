@@ -257,6 +257,9 @@ def mutate_state(state: List[Dict]) -> List[Dict]:
         updated_item = item.copy()
         updated_item["parent_id"] = item["id"]
         updated_item["parent_score"] = item.get("eval_score")
+        updated_item["source_id"] = source_item["id"]
+        updated_item["source_type"] = source_item["type"]
+        updated_item["source_distractor"] = source_item["distractor"]
         updated_item["id"] = f"{target_type}_{position}_{uuid.uuid4().hex[:8]}"
         # type and position are unchanged — grid stays full
         updated_item["distractor"] = new_text

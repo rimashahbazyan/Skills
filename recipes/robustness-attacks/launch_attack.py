@@ -1,5 +1,6 @@
 import argparse
 import glob
+import json
 import logging
 import os
 import tempfile
@@ -84,6 +85,35 @@ def _upload_iter_stubs(
 				LOG.info("Uploaded stub data file to %s", stub_path)
 
 
+def _iteration_complete(cluster_config: dict, output_folder: str, iteration: int) -> bool:
+	"""Return True if iteration already finished (all archive entries have eval_score).
+
+	Checks directly on the cluster (no file download) by counting lines
+	with and without eval_score in the archive JSONL.
+	"""
+	remote_path = pipeline_utils.get_unmounted_path(
+		cluster_config, f"{output_folder}/archive/iter{iteration}.jsonl"
+	)
+
+	if not pipeline_utils.cluster_path_exists(cluster_config, remote_path):
+		return False
+
+	# Count total non-empty lines and lines containing "eval_score" on the server.
+	tunnel = pipeline_utils.get_tunnel(cluster_config)
+	result = tunnel.run(
+		f'total=$(grep -c . {remote_path}); '
+		f'scored=$(grep -c "eval_score" {remote_path}); '
+		f'echo "$total $scored"',
+		hide=True,
+		warn=True,
+	)
+	parts = result.stdout.strip().split()
+	if len(parts) != 2:
+		return False
+	total, scored = int(parts[0]), int(parts[1])
+	return total > 0 and total == scored
+
+
 _MUTATION_SERVER_PORT = 5000  # default port NeMo-Run uses for a co-process vLLM server
 
 
@@ -139,7 +169,7 @@ def schedule_iteration(
 		step1_kwargs["model"] = mutation_model
 		step1_kwargs["partition"] = cluster_config.get("partition")
 	else:
-		step1_kwargs["partition"] = "cpu_short"
+		step1_kwargs["partition"] = cluster_config.get("partition")
 	run_cmd(**step1_kwargs)
 
 	# step 2
@@ -157,7 +187,7 @@ def schedule_iteration(
 		expname=step2_expname,
 		log_dir=f"{log_dir}/iter{current_iteration}/step2",
 		run_after=[step1_expname],
-		partition="cpu_short",
+		partition=cluster_config.get("partition"),
 	)
 
 	# calculate number of positions from prompts
@@ -220,7 +250,7 @@ def schedule_iteration(
 		expname=step4_expname,
 		log_dir=f"{log_dir}/iter{current_iteration}/step4",
 		run_after=eval_expnames,
-		partition="cpu_short",
+		partition=cluster_config.get("partition"),
 	)
 
 	return exp
@@ -257,6 +287,11 @@ def run_iterative_attack(
 
 		last_exp = None
 		for current_iteration in range(batch_start, batch_end + 1):
+			if _iteration_complete(cluster_config, output_folder, current_iteration):
+				LOG.info(f"Iteration {current_iteration} already complete — skipping")
+				prev_step4_expname = None  # no active job to wait for
+				continue
+
 			last_exp = schedule_iteration(
 				cluster=cluster,
 				cluster_config=cluster_config,
@@ -276,9 +311,12 @@ def run_iterative_attack(
 			)
 			prev_step4_expname = f"{expname_prefix}_iter{current_iteration}_step4"
 
-		LOG.info(f"Waiting for batch {batch_start}–{batch_end} to complete...")
-		last_exp._wait_for_jobs(last_exp.jobs)
-		LOG.info(f"Batch {batch_start}–{batch_end} completed")
+		if last_exp is not None:
+			LOG.info(f"Waiting for batch {batch_start}–{batch_end} to complete...")
+			last_exp._wait_for_jobs(last_exp.jobs)
+			LOG.info(f"Batch {batch_start}–{batch_end} completed")
+		else:
+			LOG.info(f"Batch {batch_start}–{batch_end} — all iterations already complete")
 
 	LOG.info(f"All {iter_num} iterations completed successfully!")
 
