@@ -23,6 +23,9 @@ AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT", "https://llm-proxy.perflab.nvidia.c
 # Default port NeMo-Run uses when launching a co-process vLLM server via run_cmd.
 _LOCAL_SERVER_PORT = 5000
 
+DEFAULT_TEMPERATURE = 1.0  # high enough to ensure varied outputs across iterations
+DEFAULT_SEED_BASE = 42     # iteration seed = SEED_BASE + int(iteration_id)
+
 # ==========================
 # ----- Azure Client -------
 # ==========================
@@ -180,7 +183,7 @@ def _format_examples(examples: List[Dict], source_display: str, target_display: 
     return "\n".join(lines)
 
 
-def perflab_mutation_call(original_item: Dict, new_type: str) -> str:
+def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float, seed: int) -> str:
     """
     Call the Azure LLM to mutate a distractor into a new type.
     Position remains the same; type changes.
@@ -217,6 +220,8 @@ Output Format:
     response = client.chat.completions.create(
         model=MODEL,
         messages=messages,
+        temperature=temperature,
+        seed=seed,
     )
 
     raw = response.choices[0].message.content.strip()
@@ -226,7 +231,7 @@ Output Format:
     return raw
 
 
-def mutate_state(state: List[Dict]) -> List[Dict]:
+def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_base: int) -> List[Dict]:
     """Refresh every grid slot while keeping the full type grid intact.
 
     For each slot (type=D1, position=P):
@@ -236,7 +241,14 @@ def mutate_state(state: List[Dict]) -> List[Dict]:
       3. Keep the slot's type (D1) and position (P) — the grid never shrinks.
       4. Track lineage: parent_id points to the previous D1 occupant so
          step4 can compare the new distractor against the one it replaces.
+
+    Seed formula: seed = seed_base + int(iteration_id). Seeding before the loop
+    ensures both source selection (random.choice) and few-shot sampling
+    (random.sample) are reproducible for a given iteration.
     """
+    seed = seed_base + int(iteration_id)
+    random.seed(seed)
+
     updated_state = []
     used_source_ids: set = set()
 
@@ -252,7 +264,7 @@ def mutate_state(state: List[Dict]) -> List[Dict]:
             f"source type={source_item['type']} ID={source_item['id']} -> {target_type}"
         )
 
-        new_text = perflab_mutation_call(source_item, target_type)
+        new_text = perflab_mutation_call(source_item, target_type, temperature, seed)
 
         updated_item = item.copy()
         updated_item["parent_id"] = item["id"]
@@ -285,6 +297,18 @@ def main():
         type=str,
         required=True,
         help="Iteration id for logging purposes.",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=DEFAULT_TEMPERATURE,
+        help="LLM sampling temperature for mutations. Higher values produce more varied outputs.",
+    )
+    parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=DEFAULT_SEED_BASE,
+        help="Base value for the iteration seed. Actual seed = seed-base + iteration-id.",
     )
     parser.add_argument(
         "--mutation-model",
@@ -324,7 +348,7 @@ def main():
 
     archive_file = Path(args.output_folder) / "archive" / f"iter{args.iteration_id}.jsonl"
 
-    state = mutate_state(state)
+    state = mutate_state(state, args.iteration_id, args.temperature, args.seed_base)
 
     save_state(state, archive_file)
 

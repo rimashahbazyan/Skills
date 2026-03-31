@@ -134,6 +134,8 @@ def schedule_iteration(
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
 	prev_step4_expname: Optional[str] = None,
+	temperature: float = 1.0,
+	seed_base: int = 42,
 ) -> Any:
 	"""Schedule all steps for a single iteration. Returns the step4 experiment."""
 	iteration_expname = f"{expname_prefix}_iter{current_iteration}"
@@ -146,7 +148,9 @@ def schedule_iteration(
 	step1_cmd = (
 		"python recipes/robustness-attacks/scripts/step1.py "
 		f"--output-folder {output_folder} "
-		f"--iteration-id {current_iteration}"
+		f"--iteration-id {current_iteration} "
+		f"--temperature {temperature} "
+		f"--seed-base {seed_base}"
 	)
 	if mutation_model:
 		step1_cmd += (
@@ -169,7 +173,7 @@ def schedule_iteration(
 		step1_kwargs["model"] = mutation_model
 		step1_kwargs["partition"] = cluster_config.get("partition")
 	else:
-		step1_kwargs["partition"] = cluster_config.get("partition")
+		step1_kwargs["partition"] = cluster_config.get("cpu_partition")
 	run_cmd(**step1_kwargs)
 
 	# step 2
@@ -187,7 +191,7 @@ def schedule_iteration(
 		expname=step2_expname,
 		log_dir=f"{log_dir}/iter{current_iteration}/step2",
 		run_after=[step1_expname],
-		partition=cluster_config.get("partition"),
+		partition=cluster_config.get("cpu_partition"),
 	)
 
 	# calculate number of positions from prompts
@@ -250,7 +254,7 @@ def schedule_iteration(
 		expname=step4_expname,
 		log_dir=f"{log_dir}/iter{current_iteration}/step4",
 		run_after=eval_expnames,
-		partition=cluster_config.get("partition"),
+		partition=cluster_config.get("cpu_partition"),
 	)
 
 	return exp
@@ -272,6 +276,8 @@ def run_iterative_attack(
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
+	temperature: float = 1.0,
+	seed_base: int = 42,
 ) -> None:
 	"""Submit iterations in batches of iter_batch_size, waiting between batches."""
 	setup_logging(disable_hydra_logs=False, use_rich=True)
@@ -308,6 +314,8 @@ def run_iterative_attack(
 				mutation_model=mutation_model,
 				mutation_server_gpus=mutation_server_gpus,
 				prev_step4_expname=prev_step4_expname,
+				temperature=temperature,
+				seed_base=seed_base,
 			)
 			prev_step4_expname = f"{expname_prefix}_iter{current_iteration}_step4"
 
@@ -406,6 +414,18 @@ def main() -> None:
 		default=8,
 		help="Number of GPUs for the mutation vLLM server. Only used when --mutation-model is set.",
 	)
+	parser.add_argument(
+		"--temperature",
+		type=float,
+		default=1.0,
+		help="LLM sampling temperature for mutations. Higher values produce more varied outputs.",
+	)
+	parser.add_argument(
+		"--seed-base",
+		type=int,
+		default=42,
+		help="Base value for the iteration seed. Actual seed = seed-base + iteration-id.",
+	)
 
 	args = parser.parse_args()
 
@@ -424,6 +444,8 @@ def main() -> None:
 		max_model_len=args.max_model_len,
 		mutation_model=args.mutation_model,
 		mutation_server_gpus=args.mutation_server_gpus,
+		temperature=args.temperature,
+		seed_base=args.seed_base,
 	)
 
 
