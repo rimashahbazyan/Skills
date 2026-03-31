@@ -222,6 +222,7 @@ def schedule_iteration(
 					f"++max_concurrent_requests=512 "
 					f"++inference.endpoint_type=text "
 					f"++skip_filled=True "
+					f"++parse_reasoning=True "
 					f"++prompt_config={prompt_template} "
 				),
 				cluster=cluster,

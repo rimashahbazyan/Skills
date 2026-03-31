@@ -1,6 +1,8 @@
 import argparse
+import glob
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -120,6 +122,34 @@ def main() -> None:
     args = parse_args()
     output_folder = Path(args.output_folder)
     iteration_id = args.iteration_id
+
+    # Derive positions from the eval-prompt-*.yaml files (same logic as launch_attack.py)
+    _prompt_pattern = os.path.join(os.path.dirname(__file__), "..", "prompts", "eval-prompt-*.yaml")
+    _positions = sorted(
+        set(
+            os.path.splitext(os.path.basename(p))[0].split("eval-prompt-")[1]
+            for p in glob.glob(_prompt_pattern)
+        )
+    )
+
+    # Validate all metrics.json files exist before touching anything — fail loudly
+    # so the Slurm job is marked FAILED instead of silently reverting slots.
+    from constants import DISTRACTOR_TYPES
+    missing = []
+    for distractor_type in DISTRACTOR_TYPES:
+        for position in _positions:
+            metrics_path = (
+                output_folder / "logs" / f"iter{iteration_id}" / "step3"
+                / f"type-{distractor_type}_pos-{position}"
+                / "eval-results" / f"iter{iteration_id}" / "metrics.json"
+            )
+            if not metrics_path.exists():
+                missing.append(f"{distractor_type}_pos-{position}")
+    if missing:
+        raise RuntimeError(
+            f"Iteration {iteration_id}: metrics.json missing for {len(missing)} slot(s) — "
+            f"aborting to prevent silent revert-to-parent.\nMissing: {missing}"
+        )
 
     archive_path = output_folder / "archive" / f"iter{iteration_id}.jsonl"
     if not archive_path.exists():
