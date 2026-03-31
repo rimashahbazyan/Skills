@@ -164,6 +164,7 @@ Your task is to mutate the distractor so that:
 4. Do not explain the transformation.
 5. Make the transformation clearly recognizable as the Target Type \
 (lean into its stylistic markers).
+6. Make sure the transformed distractor is still a plausible adversarial distractor for question answering tasks and is even more challenging than the original.
 
 If the Target Type involves noise, corruption, markup, formatting artifacts, \
 encoding artifacts, or structural distortion, apply those aggressively."""
