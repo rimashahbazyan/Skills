@@ -196,7 +196,9 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
     examples = _load_few_shot_examples(source_type, new_type)
     examples_block = _format_examples(examples, source_display, target_display)
 
-    user_prompt = f"""{examples_block}
+    user_prompt = f"""{_SYSTEM_PROMPT}
+
+{examples_block}
 ---
 
 Now perform the transformation:
@@ -214,7 +216,6 @@ Output Format:
 ---"""
 
     messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
 

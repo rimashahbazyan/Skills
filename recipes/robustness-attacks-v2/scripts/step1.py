@@ -177,7 +177,6 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
     )
 
     messages = [
-        {"role": "system", "content": _MUTATION_PROMPT["system"]},
         {"role": "user", "content": user_prompt},
     ]
 

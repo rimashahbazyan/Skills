@@ -1,4 +1,4 @@
-system: |-
+user_template: |-
   You are a transformation engine that converts a given distractor from a \
   **Source Type** into a semantically equivalent but stylistically transformed **Target Type**.
 
@@ -15,7 +15,6 @@ system: |-
   If the Target Type involves noise, corruption, markup, formatting artifacts, \
   encoding artifacts, or structural distortion, apply those aggressively.
 
-user_template: |-
   {examples_block}
   ---
 
