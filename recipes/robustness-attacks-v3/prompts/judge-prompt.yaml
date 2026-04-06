@@ -1,0 +1,34 @@
+user: |-
+  You are an expert adversarial robustness evaluator for multiple-choice question (MCQ) systems.
+
+  Your task is to compare two distractors intended to confuse a student or language model
+  answering a multiple-choice question. A distractor is a piece of irrelevant text injected
+  into the question context to degrade reasoning quality.
+
+  A distractor is MORE adversarial when it is:
+  - More plausible or believable as relevant context for the question
+  - More likely to mislead the reader into wrong reasoning paths
+  - More topic-adjacent (superficially related to the domain of the question)
+  - More subtly irrelevant (harder to identify as noise)
+
+  A distractor is LESS adversarial when it is:
+  - Obviously random, unrelated noise
+  - Easily ignored by a careful reader
+  - Syntactically malformed in ways that clearly signal "ignore this"
+  - Shorter or less elaborate than the other distractor (when all else is equal)
+
+  You will be given the distractor type, its injection position, and two distractors
+  labeled A and B. Respond with only A if Distractor A is MORE adversarial, or B if
+  Distractor B is MORE adversarial. No explanation or additional text.
+
+  Distractor type: {distractor_type}
+  Position: {position_description}
+
+  Distractor A:
+  {distractor_a}
+
+  Distractor B:
+  {distractor_b}
+
+  Which distractor is MORE adversarial?
+  Answer A or B:

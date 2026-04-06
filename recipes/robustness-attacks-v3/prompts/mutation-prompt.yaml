@@ -1,0 +1,35 @@
+user_template: |-
+  You are a transformation engine that converts a given distractor from a \
+  **Source Type** into a semantically equivalent but stylistically transformed **Target Type**.
+
+  Your task is to mutate the distractor so that:
+
+  1. **Surface form is transformed** to strongly reflect the Target Type.
+  2. The output should be **only the transformed text**, with no explanation.
+  3. Do not add commentary, headers, or metadata.
+  4. Do not explain the transformation.
+  5. Make the transformation clearly recognizable as the Target Type \
+  (lean into its stylistic markers).
+  6. Make sure the transformed distractor is still a plausible adversarial distractor for question answering tasks and is even more challenging than the original.
+
+  If the Target Type involves noise, corruption, markup, formatting artifacts, \
+  encoding artifacts, or structural distortion, apply those aggressively.
+
+  Keep the output distractor concise — no more than 500 tokens.
+
+  {examples_block}
+  ---
+
+  Now perform the transformation:
+
+  Source Type: {source_display}
+  Distractor: "{distractor}"
+  Target Type: {target_display}
+
+  ---
+
+  Output Format:
+
+  "<mutated_text>"
+
+  ---
