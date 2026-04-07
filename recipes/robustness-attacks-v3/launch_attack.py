@@ -130,7 +130,7 @@ def schedule_iteration(
 	container: str,
 	benchmark: str,
 	subset: str,
-	server_gpus: int = 1,
+	server_gpus: int = 8,
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
@@ -232,7 +232,7 @@ def schedule_iteration(
 					data_dir=f"{output_folder}",
 					run_after=[step1_expname],
 					auto_summarize_results=False,
-					sbatch_kwargs={"time": "00:30:00"},
+					sbatch_kwargs={"time": "01:00:00"},
 				)
 
 	else:  # llm-judge
@@ -284,7 +284,7 @@ def run_iterative_attack(
 	container: str,
 	benchmark: str,
 	subset: str,
-	server_gpus: int = 1,
+	server_gpus: int = 8,
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
@@ -440,9 +440,8 @@ def main() -> None:
 	parser.add_argument(
 		"--server-gpus",
 		type=int,
-		default=1,
-		help="Number of GPUs for the vLLM inference server (step3 eval). "
-		     "Qwen3-8B fits on 1 GPU; use more only for larger models.",
+		default=8,
+		help="Number of GPUs for the vLLM inference server (step3 eval).",
 	)
 	parser.add_argument(
 		"--max-model-len",
