@@ -188,20 +188,30 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
     kwargs = dict(model=MODEL, messages=messages, temperature=temperature, max_tokens=1024)
     if _PASS_SEED:
         kwargs["seed"] = seed
-    response = client.chat.completions.create(**kwargs)
 
-    content = response.choices[0].message.content
-    if content is None:
-        raise RuntimeError(
-            f"Model returned empty content for mutation "
-            f"({original_item['type']} -> {new_type}). "
-            f"Response: {response}"
-        )
-    raw = content.strip()
-    # Strip surrounding quotes if the model followed the output format literally.
-    if raw.startswith('"') and raw.endswith('"'):
-        raw = raw[1:-1]
-    return raw
+    _MAX_RETRIES = 3
+    for attempt in range(_MAX_RETRIES):
+        response = client.chat.completions.create(**kwargs)
+        choice = response.choices[0]
+
+        if choice.finish_reason == "refusal" or choice.message.content is None:
+            print(
+                f"  WARNING: attempt {attempt + 1}/{_MAX_RETRIES} refused/empty "
+                f"({original_item['type']} -> {new_type}), retrying..."
+            )
+            continue
+
+        raw = choice.message.content.strip()
+        if raw.startswith('"') and raw.endswith('"'):
+            raw = raw[1:-1]
+        return raw
+
+    # All retries exhausted — fall back to the original distractor text
+    print(
+        f"  WARNING: all {_MAX_RETRIES} attempts refused for "
+        f"({original_item['type']} -> {new_type}), keeping original distractor"
+    )
+    return original_item["distractor"]
 
 
 def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_base: int) -> List[Dict]:
