@@ -37,8 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-concurrent-requests",
         type=int,
-        default=128,
-        help="Max concurrent requests per eval slot (default: 128).",
+        default=512,
+        help="Max concurrent requests per eval slot (default: 512).",
     )
     parser.add_argument(
         "--log-dir",
@@ -151,50 +151,47 @@ def main() -> None:
     wait_for_local_server(server_endpoint)
     logging.info("vLLM server ready at port %d", args.server_port)
 
-    # --- Launch 15 concurrent inference processes ---
-    logging.info("=== Step 3: launching %d concurrent eval processes ===", len(DISTRACTOR_TYPES) * len(positions))
-    processes: list[tuple[str, str, subprocess.Popen]] = []
+    # --- Run 15 evals sequentially against the shared server ---
+    # Running sequentially avoids KV cache contention: with tokens_to_generate=32768,
+    # 15 concurrent processes would queue ~1920 requests but only ~256 can run at once,
+    # making concurrent execution slower than sequential.
+    total_slots = len(DISTRACTOR_TYPES) * len(positions)
+    logging.info("=== Step 3: running %d evals sequentially against shared server ===", total_slots)
 
-    for distractor_type in DISTRACTOR_TYPES:
-        for position in positions:
-            slot_label = f"type-{distractor_type}_pos-{position}"
-            slot_dir = f"{log_dir}/iter{iteration_id}/step3/{slot_label}/eval-results"
-
-            input_file = (
-                f"{output_folder}/iter{iteration_id}/"
-                f"{args.benchmark}_{args.subset}__type-{distractor_type}__pos-{position}.jsonl"
-            )
-            output_file = f"{slot_dir}/iter{iteration_id}/output-rs0.jsonl"
-            prompt_config = f"/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml"
-
-            cmd = build_generate_cmd(
-                input_file=input_file,
-                output_file=output_file,
-                prompt_config=prompt_config,
-                model=args.model,
-                server_port=args.server_port,
-                max_concurrent_requests=args.max_concurrent_requests,
-            )
-
-            logging.info("Starting eval: %s", slot_label)
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            processes.append((distractor_type, position, proc))
-
-    # --- Wait for all inference processes ---
     failures = []
-    for distractor_type, position, proc in processes:
+    for slot_idx, (distractor_type, position) in enumerate(
+        (dt, pos) for dt in DISTRACTOR_TYPES for pos in positions
+    ):
         slot_label = f"type-{distractor_type}_pos-{position}"
-        returncode = proc.wait()
-        output = proc.stdout.read().decode() if proc.stdout else ""
-        if returncode != 0:
-            logging.error("FAILED: %s (exit code %d)\n%s", slot_label, returncode, output)
+        slot_dir = f"{log_dir}/iter{iteration_id}/step3/{slot_label}/eval-results"
+
+        input_file = (
+            f"{output_folder}/iter{iteration_id}/"
+            f"{args.benchmark}_{args.subset}__type-{distractor_type}__pos-{position}.jsonl"
+        )
+        output_file = f"{slot_dir}/iter{iteration_id}/output-rs0.jsonl"
+        prompt_config = f"/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml"
+
+        cmd = build_generate_cmd(
+            input_file=input_file,
+            output_file=output_file,
+            prompt_config=prompt_config,
+            model=args.model,
+            server_port=args.server_port,
+            max_concurrent_requests=args.max_concurrent_requests,
+        )
+
+        logging.info("[%d/%d] Running eval: %s", slot_idx + 1, total_slots, slot_label)
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logging.error("FAILED: %s (exit code %d)\n%s", slot_label, result.returncode, result.stdout + result.stderr)
             failures.append(slot_label)
         else:
-            logging.info("Completed: %s", slot_label)
+            logging.info("[%d/%d] Completed: %s", slot_idx + 1, total_slots, slot_label)
 
     if failures:
         raise RuntimeError(
-            f"Inference failed for {len(failures)}/{len(processes)} slot(s): {failures}"
+            f"Inference failed for {len(failures)}/{total_slots} slot(s): {failures}"
         )
 
     logging.info("All %d inference processes completed successfully.", len(processes))
