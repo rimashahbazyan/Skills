@@ -1,13 +1,88 @@
 import argparse
+import glob
+import json
 import logging
+import os
+import tempfile
+from pathlib import Path
 from typing import Any, Optional
 
 from nemo_skills.pipeline import utils as pipeline_utils
-from nemo_skills.pipeline.cli import run_cmd, wrap_arguments
+from nemo_skills.pipeline.cli import eval, run_cmd, wrap_arguments
 from nemo_skills.utils import get_logger_name, setup_logging
+from scripts.constants import DISTRACTOR_TYPES
 
 
 LOG = logging.getLogger(get_logger_name(__file__))
+
+
+_BENCHMARK_INIT_CONTENT = (
+	'METRICS_TYPE = "multichoice"\n'
+	'EVAL_SPLIT = "test"\n'
+	'GENERATION_ARGS = "++eval_type=multichoice"\n'
+)
+
+
+def _upload_iter_stubs(
+	cluster_config: dict,
+	output_folder: str,
+	iteration: int,
+	benchmark: str,
+	subset: str,
+	distractor_types: list,
+	positions: list,
+) -> None:
+	"""Create iter{N}/__init__.py and empty stub data files on the cluster.
+
+	eval() fetches __init__.py to resolve the benchmark config and also checks
+	that each data JSONL file exists at submission time (before step2 runs).
+	The stub JSONL files are empty placeholders; step2 overwrites them at runtime.
+	"""
+	real_iter_dir = pipeline_utils.get_unmounted_path(cluster_config, f"{output_folder}/iter{iteration}")
+
+	if cluster_config.get("executor") == "local":
+		# For local executor LocalTunnel has no SFTP session; write files directly.
+		iter_dir = Path(real_iter_dir)
+		iter_dir.mkdir(parents=True, exist_ok=True)
+
+		init_file = iter_dir / "__init__.py"
+		if not init_file.exists():
+			init_file.write_text(_BENCHMARK_INIT_CONTENT)
+			LOG.info("Created benchmark init file at %s", init_file)
+
+		for distractor_type in distractor_types:
+			for position in positions:
+				filename = f"{benchmark}_{subset}__type-{distractor_type}__pos-{position}.jsonl"
+				stub_file = iter_dir / filename
+				if not stub_file.exists():
+					stub_file.write_text("")
+					LOG.info("Created stub data file at %s", stub_file)
+		return
+
+	tunnel = pipeline_utils.get_tunnel(cluster_config)
+	tunnel.run(f"mkdir -p {real_iter_dir}", hide=True)
+
+	# Upload __init__.py if not already present.
+	init_path = f"{output_folder}/iter{iteration}/__init__.py"
+	if not pipeline_utils.cluster_path_exists(cluster_config, init_path):
+		with tempfile.NamedTemporaryFile(mode="w", suffix="__init__.py", delete=False) as f:
+			f.write(_BENCHMARK_INIT_CONTENT)
+			tmp_path = f.name
+		pipeline_utils.cluster_upload(cluster_config, tmp_path, f"{real_iter_dir}/__init__.py", verbose=False)
+		os.unlink(tmp_path)
+		LOG.info("Uploaded benchmark init file to %s", init_path)
+
+	# Create empty stub JSONL files so eval() existence check passes before step2 runs.
+	for distractor_type in distractor_types:
+		for position in positions:
+			filename = f"{benchmark}_{subset}__type-{distractor_type}__pos-{position}.jsonl"
+			stub_path = f"{output_folder}/iter{iteration}/{filename}"
+			if not pipeline_utils.cluster_path_exists(cluster_config, stub_path):
+				with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+					tmp_path = f.name
+				pipeline_utils.cluster_upload(cluster_config, tmp_path, f"{real_iter_dir}/{filename}", verbose=False)
+				os.unlink(tmp_path)
+				LOG.info("Uploaded stub data file to %s", stub_path)
 
 
 def _iteration_complete(cluster_config: dict, output_folder: str, iteration: int) -> bool:
@@ -54,7 +129,7 @@ def schedule_iteration(
 	container: str,
 	benchmark: str,
 	subset: str,
-	server_gpus: int = 8,
+	server_gpus: int = 1,
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
@@ -70,15 +145,18 @@ def schedule_iteration(
 	"""Schedule all steps for a single iteration. Returns the step4 experiment."""
 	iteration_expname = f"{expname_prefix}_iter{current_iteration}"
 	step1_expname = f"{iteration_expname}_step1"
+
 	LOG.info(f"Scheduling iteration {current_iteration}")
 
-	# step 1 — wait for previous iteration's step4 if provided
+	# step 1 — mutation + step2 injection (merged to avoid extra Slurm job)
 	step1_cmd = (
 		"python recipes/robustness-attacks-v3/scripts/step1.py "
 		f"--output-folder {output_folder} "
 		f"--iteration-id {current_iteration} "
 		f"--temperature {temperature} "
-		f"--seed-base {seed_base}"
+		f"--seed-base {seed_base} "
+		f"--benchmark {benchmark} "
+		f"--subset {subset}"
 	)
 	if mutation_model:
 		step1_cmd += (
@@ -100,37 +178,60 @@ def schedule_iteration(
 		step1_kwargs["server_gpus"] = mutation_server_gpus
 		step1_kwargs["model"] = mutation_model
 		step1_kwargs["partition"] = cluster_config.get("partition")
+		step1_kwargs["sbatch_kwargs"] = '{"time": "00:30:00"}'
 	else:
 		step1_kwargs["partition"] = cluster_config.get("cpu_partition")
 	run_cmd(**step1_kwargs)
 
 	if eval_mode == "benchmark":
-		# Consolidated step 2 + step 3: single job with shared vLLM server.
-		# step3_eval.py runs step2 inline, then launches 15 concurrent evals
-		# against one vLLM co-process server (instead of 15 separate jobs).
-		step3_expname = f"{iteration_expname}_step3"
-		step3_cmd = (
-			"python recipes/robustness-attacks-v3/scripts/step3_eval.py "
-			f"--output-folder {output_folder} "
-			f"--iteration-id {current_iteration} "
-			f"--benchmark {benchmark} "
-			f"--subset {subset} "
-			f"--model {model_name} "
+		# calculate number of positions from prompts
+		pattern = "recipes/robustness-attacks-v3/prompts/eval-prompt-*.yaml"
+		prompt_files = glob.glob(pattern)
+		positions = sorted(
+			set(
+				os.path.splitext(os.path.basename(file_path))[0].split("eval-prompt-")[1]
+				for file_path in prompt_files
+			)
 		)
-		run_cmd(
-			ctx=wrap_arguments(step3_cmd),
-			cluster=cluster,
-			container=container,
-			expname=step3_expname,
-			log_dir=f"{log_dir}/iter{current_iteration}/step3",
-			run_after=[step1_expname],
-			server_type="vllm",
-			server_gpus=server_gpus,
-			model=model_name,
-			server_args=f"--max-model-len {max_model_len}",
-			partition=cluster_config.get("partition"),
-		)
-		step4_run_after = [step3_expname]
+
+		# Ensure iter{N}/__init__.py and stub data files exist before eval() submission checks.
+		_upload_iter_stubs(cluster_config, output_folder, current_iteration, benchmark, subset, DISTRACTOR_TYPES, positions)
+
+		# step 3 — 15 parallel benchmark evals (step2 already ran inline in step1)
+		# auto_summarize_results=False because step4 runs summarize inline.
+		step4_run_after = []
+		for distractor_type in DISTRACTOR_TYPES:
+			for position in positions:
+				split = f"{benchmark}_{subset}__type-{distractor_type}__pos-{position}"
+				prompt_template = f'/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml'
+				eval_expname = f"{iteration_expname}_eval_type-{distractor_type}_pos-{position}"
+				step4_run_after.append(eval_expname)
+
+				eval(
+					ctx=wrap_arguments(
+						f"++inference.tokens_to_generate={32768} "
+						f"++max_concurrent_requests=512 "
+						f"++inference.endpoint_type=text "
+						f"++skip_filled=True "
+						f"++parse_reasoning=True "
+						f"++prompt_config={prompt_template} "
+					),
+					cluster=cluster,
+					expname=eval_expname,
+					output_dir=f"{log_dir}/iter{current_iteration}/step3/type-{distractor_type}_pos-{position}",
+					log_dir=f"{log_dir}/iter{current_iteration}/step3/type-{distractor_type}_pos-{position}/logs",
+					model=model_name,
+					server_type="vllm",
+					server_gpus=server_gpus,
+					server_args=f"--max-model-len {max_model_len}",
+					benchmarks=f"iter{current_iteration}:{1}",
+					num_chunks=1,
+					split=split,
+					data_dir=f"{output_folder}",
+					run_after=[step1_expname],
+					auto_summarize_results=False,
+					sbatch_kwargs={"time": "00:30:00"},
+				)
 
 	else:  # llm-judge — skip step2 and ns eval; run step3_judge instead
 		step3_judge_expname = f"{iteration_expname}_step3_judge"
@@ -199,7 +300,7 @@ def run_iterative_attack(
 	container: str,
 	benchmark: str,
 	subset: str,
-	server_gpus: int = 8,
+	server_gpus: int = 1,
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
@@ -327,8 +428,9 @@ def main() -> None:
 	parser.add_argument(
 		"--server-gpus",
 		type=int,
-		default=8,
-		help="Number of GPUs for the vLLM inference server (step3 eval).",
+		default=1,
+		help="Number of GPUs for the vLLM inference server (step3 eval). "
+		     "Qwen3-8B fits on 1 GPU; use more only for larger models.",
 	)
 	parser.add_argument(
 		"--max-model-len",

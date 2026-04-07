@@ -1,6 +1,8 @@
 import argparse
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -235,6 +237,39 @@ def select_distractor_judge(
     return reverted
 
 
+def run_summarize_results(output_folder: Path, iteration_id: str, distractor_types: list, positions: list) -> None:
+    """Run summarize_results for each (type, position) slot to generate metrics.json.
+
+    Called inline by step4 so that summarize does not need to be a separate Slurm job.
+    Skips slots where metrics.json already exists.
+    """
+    for distractor_type in distractor_types:
+        for position in positions:
+            slot_label = f"type-{distractor_type}_pos-{position}"
+            results_folder = (
+                output_folder / "logs" / f"iter{iteration_id}" / "step3"
+                / slot_label / "eval-results"
+            )
+            metrics_path = results_folder / f"iter{iteration_id}" / "metrics.json"
+
+            if metrics_path.exists():
+                logging.info("  %s: metrics.json already exists, skipping summarize.", slot_label)
+                continue
+
+            cmd = [
+                sys.executable, "-m", "nemo_skills.pipeline.summarize_results",
+                str(results_folder),
+                "--benchmarks", f"iter{iteration_id}",
+                "--save_metrics_path", str(metrics_path),
+                "--metric_type=multichoice",
+            ]
+            logging.info("  Summarizing: %s", slot_label)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                logging.error("  Summarize FAILED for %s:\n%s", slot_label, result.stderr)
+                raise RuntimeError(f"Summarize failed for {slot_label}")
+
+
 def main() -> None:
     args = parse_args()
     output_folder = Path(args.output_folder)
@@ -250,6 +285,11 @@ def main() -> None:
     _positions = sorted(set(str(item["position"]) for item in archive))
 
     from constants import DISTRACTOR_TYPES
+
+    # Run summarize_results inline (replaces 15 separate Slurm summarize jobs).
+    if eval_mode == "benchmark":
+        logging.info("Running summarize_results for all slots...")
+        run_summarize_results(output_folder, iteration_id, DISTRACTOR_TYPES, _positions)
 
     # Pre-flight: validate all score sources exist before touching anything.
     missing = []

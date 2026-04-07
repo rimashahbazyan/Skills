@@ -287,6 +287,18 @@ def main():
         help="OpenAI-compatible endpoint for the local mutation server. "
              "Only used when --mutation-model is set.",
     )
+    parser.add_argument(
+        "--benchmark",
+        type=str,
+        default=None,
+        help="Benchmark name (e.g. gpqa). When set, runs step2 injection inline after mutation.",
+    )
+    parser.add_argument(
+        "--subset",
+        type=str,
+        default=None,
+        help="Benchmark subset (e.g. diamond). Required when --benchmark is set.",
+    )
     args = parser.parse_args()
 
     # If a local model is requested, wait for the co-process vLLM server
@@ -326,6 +338,26 @@ def main():
             'GENERATION_ARGS = "++eval_type=multichoice"\n'
         )
         print(f"Created {init_file}")
+
+    # Optionally run step2 (distractor injection) inline to avoid a separate Slurm job.
+    if args.benchmark:
+        from step2 import ensure_benchmark_file, read_jsonl as read_jsonl_step2, validate_and_index_distractors, write_injected_files
+
+        workdir = Path(args.output_folder)
+        benchmark_file = ensure_benchmark_file(args.benchmark, args.subset, workdir)
+        benchmark_rows = read_jsonl_step2(benchmark_file)
+        distractor_types, positions, distractor_index = validate_and_index_distractors(archive_file)
+        write_injected_files(
+            benchmark_rows=benchmark_rows,
+            benchmark=args.benchmark,
+            subset=args.subset,
+            iteration=int(args.iteration_id),
+            distractor_index=distractor_index,
+            distractor_types=distractor_types,
+            positions=positions,
+            workdir=workdir,
+        )
+        print(f"Step2 (inline): injected {len(distractor_types)} x {len(positions)} = {len(distractor_types) * len(positions)} files.")
 
     print(f"Step1 completed for iteration {args.iteration_id}")
 
