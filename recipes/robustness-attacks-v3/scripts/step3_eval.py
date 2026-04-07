@@ -41,6 +41,14 @@ def parse_args() -> argparse.Namespace:
         help="Max concurrent requests per eval slot (default: 512).",
     )
     parser.add_argument(
+        "--parallel-evals",
+        type=int,
+        default=3,
+        help="Number of eval slots to run concurrently (default: 3). "
+        "Each slot sends max-concurrent-requests to the shared server. "
+        "Too many concurrent slots saturates the KV cache.",
+    )
+    parser.add_argument(
         "--log-dir",
         type=str,
         default=None,
@@ -151,43 +159,57 @@ def main() -> None:
     wait_for_local_server(server_endpoint)
     logging.info("vLLM server ready at port %d", args.server_port)
 
-    # --- Run 15 evals sequentially against the shared server ---
-    # Running sequentially avoids KV cache contention: with tokens_to_generate=32768,
-    # 15 concurrent processes would queue ~1920 requests but only ~256 can run at once,
-    # making concurrent execution slower than sequential.
-    total_slots = len(DISTRACTOR_TYPES) * len(positions)
-    logging.info("=== Step 3: running %d evals sequentially against shared server ===", total_slots)
+    # --- Run evals in batches against the shared server ---
+    # With tokens_to_generate=32768 the KV cache limits concurrency to ~256 requests.
+    # Running all 15 slots at once saturates the cache and makes everything slower.
+    # Batching (default: 3 concurrent) balances throughput and cache pressure.
+    all_slots = [(dt, pos) for dt in DISTRACTOR_TYPES for pos in positions]
+    total_slots = len(all_slots)
+    batch_size = args.parallel_evals
+    logging.info(
+        "=== Step 3: running %d evals in batches of %d against shared server ===",
+        total_slots, batch_size,
+    )
 
     failures = []
-    for slot_idx, (distractor_type, position) in enumerate(
-        (dt, pos) for dt in DISTRACTOR_TYPES for pos in positions
-    ):
-        slot_label = f"type-{distractor_type}_pos-{position}"
-        slot_dir = f"{log_dir}/iter{iteration_id}/step3/{slot_label}/eval-results"
+    for batch_start in range(0, total_slots, batch_size):
+        batch = all_slots[batch_start:batch_start + batch_size]
+        batch_procs: list[tuple[str, subprocess.Popen]] = []
 
-        input_file = (
-            f"{output_folder}/iter{iteration_id}/"
-            f"{args.benchmark}_{args.subset}__type-{distractor_type}__pos-{position}.jsonl"
-        )
-        output_file = f"{slot_dir}/iter{iteration_id}/output-rs0.jsonl"
-        prompt_config = f"/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml"
+        for distractor_type, position in batch:
+            slot_label = f"type-{distractor_type}_pos-{position}"
+            slot_dir = f"{log_dir}/iter{iteration_id}/step3/{slot_label}/eval-results"
 
-        cmd = build_generate_cmd(
-            input_file=input_file,
-            output_file=output_file,
-            prompt_config=prompt_config,
-            model=args.model,
-            server_port=args.server_port,
-            max_concurrent_requests=args.max_concurrent_requests,
-        )
+            input_file = (
+                f"{output_folder}/iter{iteration_id}/"
+                f"{args.benchmark}_{args.subset}__type-{distractor_type}__pos-{position}.jsonl"
+            )
+            output_file = f"{slot_dir}/iter{iteration_id}/output-rs0.jsonl"
+            prompt_config = f"/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml"
 
-        logging.info("[%d/%d] Running eval: %s", slot_idx + 1, total_slots, slot_label)
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            logging.error("FAILED: %s (exit code %d)\n%s", slot_label, result.returncode, result.stdout + result.stderr)
-            failures.append(slot_label)
-        else:
-            logging.info("[%d/%d] Completed: %s", slot_idx + 1, total_slots, slot_label)
+            cmd = build_generate_cmd(
+                input_file=input_file,
+                output_file=output_file,
+                prompt_config=prompt_config,
+                model=args.model,
+                server_port=args.server_port,
+                max_concurrent_requests=args.max_concurrent_requests,
+            )
+
+            slot_idx = batch_start + len(batch_procs) + 1
+            logging.info("[%d/%d] Starting eval: %s", slot_idx, total_slots, slot_label)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            batch_procs.append((slot_label, proc))
+
+        # Wait for batch to complete
+        for slot_label, proc in batch_procs:
+            returncode = proc.wait()
+            output = proc.stdout.read().decode() if proc.stdout else ""
+            if returncode != 0:
+                logging.error("FAILED: %s (exit code %d)\n%s", slot_label, returncode, output)
+                failures.append(slot_label)
+            else:
+                logging.info("Completed: %s", slot_label)
 
     if failures:
         raise RuntimeError(
