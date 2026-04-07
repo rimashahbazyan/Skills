@@ -124,6 +124,7 @@ def schedule_iteration(
 	output_folder: str,
 	model_name: str,
 	current_iteration: int,
+	prev_iteration: Optional[int] = None,
 	expname_prefix: str,
 	log_dir: str,
 	container: str,
@@ -133,7 +134,7 @@ def schedule_iteration(
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
-	prev_step4_expname: Optional[str] = None,
+	prev_eval_expnames: Optional[list] = None,
 	temperature: float = 1.0,
 	seed_base: int = 42,
 	eval_mode: str = "benchmark",
@@ -141,14 +142,17 @@ def schedule_iteration(
 	judge_server_gpus: int = 8,
 	judge_server_nodes: int = 1,
 	judge_max_model_len: int = 16384,
-) -> Any:
-	"""Schedule all steps for a single iteration. Returns the step4 experiment."""
+) -> list:
+	"""Schedule step1 (with inline step4 for prev iter) + evals.
+
+	Returns list of eval experiment names so the next iteration can depend on them.
+	"""
 	iteration_expname = f"{expname_prefix}_iter{current_iteration}"
 	step1_expname = f"{iteration_expname}_step1"
 
 	LOG.info(f"Scheduling iteration {current_iteration}")
 
-	# step 1 — mutation + step2 injection (merged to avoid extra Slurm job)
+	# step 1 — runs step4(N-1) inline, then mutation, then step2 injection
 	step1_cmd = (
 		"python recipes/robustness-attacks-v3/scripts/step1.py "
 		f"--output-folder {output_folder} "
@@ -158,6 +162,8 @@ def schedule_iteration(
 		f"--benchmark {benchmark} "
 		f"--subset {subset}"
 	)
+	if prev_iteration is not None:
+		step1_cmd += f" --prev-iteration-id {prev_iteration} --eval-mode {eval_mode}"
 	if mutation_model:
 		step1_cmd += (
 			f" --mutation-model {mutation_model}"
@@ -170,10 +176,9 @@ def schedule_iteration(
 		container=container,
 		expname=step1_expname,
 		log_dir=f"{log_dir}/iter{current_iteration}/step1",
-		run_after=[prev_step4_expname] if prev_step4_expname else [],
+		run_after=prev_eval_expnames or [],
 	)
 	if mutation_model:
-		# Run on a GPU node; NeMo-Run starts a vLLM co-process on the same node.
 		step1_kwargs["server_type"] = "vllm"
 		step1_kwargs["server_gpus"] = mutation_server_gpus
 		step1_kwargs["model"] = mutation_model
@@ -183,8 +188,9 @@ def schedule_iteration(
 		step1_kwargs["partition"] = cluster_config.get("cpu_partition")
 	run_cmd(**step1_kwargs)
 
+	eval_expnames = []
+
 	if eval_mode == "benchmark":
-		# calculate number of positions from prompts
 		pattern = "recipes/robustness-attacks-v3/prompts/eval-prompt-*.yaml"
 		prompt_files = glob.glob(pattern)
 		positions = sorted(
@@ -194,18 +200,14 @@ def schedule_iteration(
 			)
 		)
 
-		# Ensure iter{N}/__init__.py and stub data files exist before eval() submission checks.
 		_upload_iter_stubs(cluster_config, output_folder, current_iteration, benchmark, subset, DISTRACTOR_TYPES, positions)
 
-		# step 3 — 15 parallel benchmark evals (step2 already ran inline in step1)
-		# auto_summarize_results=False because step4 runs summarize inline.
-		step4_run_after = []
 		for distractor_type in DISTRACTOR_TYPES:
 			for position in positions:
 				split = f"{benchmark}_{subset}__type-{distractor_type}__pos-{position}"
 				prompt_template = f'/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml'
 				eval_expname = f"{iteration_expname}_eval_type-{distractor_type}_pos-{position}"
-				step4_run_after.append(eval_expname)
+				eval_expnames.append(eval_expname)
 
 				eval(
 					ctx=wrap_arguments(
@@ -233,7 +235,7 @@ def schedule_iteration(
 					sbatch_kwargs={"time": "00:30:00"},
 				)
 
-	else:  # llm-judge — skip step2 and ns eval; run step3_judge instead
+	else:  # llm-judge
 		step3_judge_expname = f"{iteration_expname}_step3_judge"
 		step3_judge_cmd = (
 			"python recipes/robustness-attacks-v3/scripts/step3_judge.py "
@@ -265,27 +267,9 @@ def schedule_iteration(
 			step3_judge_kwargs["partition"] = cluster_config.get("cpu_partition")
 		run_cmd(**step3_judge_kwargs)
 
-		step4_run_after = [step3_judge_expname]
+		eval_expnames = [step3_judge_expname]
 
-	# step 4 — parse scores and select distractors, runs after all evals complete
-	step4_expname = f"{iteration_expname}_step4"
-	step4_cmd = (
-		"python recipes/robustness-attacks-v3/scripts/step4.py "
-		f"--output-folder {output_folder} "
-		f"--iteration-id {current_iteration} "
-		f"--eval-mode {eval_mode} "
-	)
-	exp = run_cmd(
-		ctx=wrap_arguments(step4_cmd),
-		cluster=cluster,
-		container=container,
-		expname=step4_expname,
-		log_dir=f"{log_dir}/iter{current_iteration}/step4",
-		run_after=step4_run_after,
-		partition=cluster_config.get("cpu_partition"),
-	)
-
-	return exp
+	return eval_expnames
 
 
 def run_iterative_attack(
@@ -318,25 +302,29 @@ def run_iterative_attack(
 
 	LOG.info(f"Starting iterative attack: {iter_num} iterations total, batch size {iter_batch_size}")
 
-	prev_step4_expname: Optional[str] = None
+	prev_eval_expnames: Optional[list] = None
+	prev_iteration: Optional[int] = None
 
 	for batch_start in range(1, iter_num + 1, iter_batch_size):
 		batch_end = min(batch_start + iter_batch_size - 1, iter_num)
 		LOG.info(f"Submitting batch: iterations {batch_start}–{batch_end}")
 
-		last_exp = None
+		last_eval_expnames = None
+		last_iteration = None
 		for current_iteration in range(batch_start, batch_end + 1):
 			if _iteration_complete(cluster_config, output_folder, current_iteration):
 				LOG.info(f"Iteration {current_iteration} already complete — skipping")
-				prev_step4_expname = None  # no active job to wait for
+				prev_eval_expnames = None
+				prev_iteration = None
 				continue
 
-			last_exp = schedule_iteration(
+			eval_expnames = schedule_iteration(
 				cluster=cluster,
 				cluster_config=cluster_config,
 				output_folder=output_folder,
 				model_name=model_name,
 				current_iteration=current_iteration,
+				prev_iteration=prev_iteration,
 				expname_prefix=expname_prefix,
 				log_dir=log_dir,
 				container=container,
@@ -346,7 +334,7 @@ def run_iterative_attack(
 				max_model_len=max_model_len,
 				mutation_model=mutation_model,
 				mutation_server_gpus=mutation_server_gpus,
-				prev_step4_expname=prev_step4_expname,
+				prev_eval_expnames=prev_eval_expnames,
 				temperature=temperature,
 				seed_base=seed_base,
 				eval_mode=eval_mode,
@@ -355,12 +343,36 @@ def run_iterative_attack(
 				judge_server_nodes=judge_server_nodes,
 				judge_max_model_len=judge_max_model_len,
 			)
-			prev_step4_expname = f"{expname_prefix}_iter{current_iteration}_step4"
+			prev_eval_expnames = eval_expnames
+			prev_iteration = current_iteration
+			last_eval_expnames = eval_expnames
+			last_iteration = current_iteration
 
-		if last_exp is not None:
+		# Trailing step4 for the last iteration in this batch — its step4 was never
+		# run inline by a subsequent step1, so we schedule it as a separate job.
+		if last_eval_expnames is not None and last_iteration is not None:
+			step4_expname = f"{expname_prefix}_iter{last_iteration}_step4"
+			step4_cmd = (
+				"python recipes/robustness-attacks-v3/scripts/step4.py "
+				f"--output-folder {output_folder} "
+				f"--iteration-id {last_iteration} "
+				f"--eval-mode {eval_mode} "
+			)
+			last_exp = run_cmd(
+				ctx=wrap_arguments(step4_cmd),
+				cluster=cluster,
+				container=container,
+				expname=step4_expname,
+				log_dir=f"{log_dir}/iter{last_iteration}/step4",
+				run_after=last_eval_expnames,
+				partition=cluster_config.get("cpu_partition"),
+			)
 			LOG.info(f"Waiting for batch {batch_start}–{batch_end} to complete...")
 			last_exp._wait_for_jobs(last_exp.jobs)
 			LOG.info(f"Batch {batch_start}–{batch_end} completed")
+			# Reset for next batch — step4 already ran, no need to re-run
+			prev_eval_expnames = None
+			prev_iteration = None
 		else:
 			LOG.info(f"Batch {batch_start}–{batch_end} — all iterations already complete")
 

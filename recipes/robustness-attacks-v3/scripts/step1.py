@@ -299,6 +299,20 @@ def main():
         default=None,
         help="Benchmark subset (e.g. diamond). Required when --benchmark is set.",
     )
+    parser.add_argument(
+        "--prev-iteration-id",
+        type=str,
+        default=None,
+        help="Previous iteration id. When set, runs step4 (summarize + selection) for the "
+             "previous iteration before starting mutation. Eliminates a separate Slurm job.",
+    )
+    parser.add_argument(
+        "--eval-mode",
+        type=str,
+        choices=["benchmark", "llm-judge"],
+        default="benchmark",
+        help="Evaluation mode passed to step4. Only used when --prev-iteration-id is set.",
+    )
     args = parser.parse_args()
 
     # If a local model is requested, wait for the co-process vLLM server
@@ -311,6 +325,22 @@ def main():
         print(f"Using local model: {args.mutation_model} @ {args.mutation_endpoint}")
     else:
         print(f"Using Azure model: {MODEL} @ {AZURE_ENDPOINT}")
+
+    # Run step4 for the previous iteration (summarize + selection) before mutating.
+    # This updates current_state.jsonl which step1 then reads for mutation.
+    if args.prev_iteration_id:
+        print(f"Running step4 for previous iteration {args.prev_iteration_id}...")
+        import subprocess, sys
+        step4_cmd = [
+            sys.executable, "/nemo_run/code/recipes/robustness-attacks-v3/scripts/step4.py",
+            "--output-folder", args.output_folder,
+            "--iteration-id", args.prev_iteration_id,
+            "--eval-mode", args.eval_mode,
+        ]
+        result = subprocess.run(step4_cmd, cwd="/nemo_run/code/recipes/robustness-attacks-v3/scripts")
+        if result.returncode != 0:
+            raise RuntimeError(f"Step4 for iteration {args.prev_iteration_id} failed (exit code {result.returncode})")
+        print(f"Step4 for iteration {args.prev_iteration_id} completed.")
 
     state_file = Path(args.output_folder) / "current_state.jsonl"
 
