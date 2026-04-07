@@ -185,12 +185,19 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
         {"role": "user", "content": user_prompt},
     ]
 
-    kwargs = dict(model=MODEL, messages=messages, temperature=temperature)
+    kwargs = dict(model=MODEL, messages=messages, temperature=temperature, max_tokens=1024)
     if _PASS_SEED:
         kwargs["seed"] = seed
     response = client.chat.completions.create(**kwargs)
 
-    raw = response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    if content is None:
+        raise RuntimeError(
+            f"Model returned empty content for mutation "
+            f"({original_item['type']} -> {new_type}). "
+            f"Response: {response}"
+        )
+    raw = content.strip()
     # Strip surrounding quotes if the model followed the output format literally.
     if raw.startswith('"') and raw.endswith('"'):
         raw = raw[1:-1]
