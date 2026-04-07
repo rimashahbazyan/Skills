@@ -3,7 +3,9 @@
 ## Baseline
 - **Run:** `gpqa-diamond-qwen8b-new-mutation-prompt` (v2, ord cluster, 100 iterations)
 - **Config:** Qwen3-8B, gpt-oss-120b mutation model, 8 GPUs eval, original few-shot examples
+- **Cluster:** ord
 - **Path:** `/lustre/fsw/portfolios/llmservice/users/rshahbazyan/robustness-attacks/gpqa-diamond-qwen8b-new-mutation-prompt`
+- **Log path:** `{path}/logs/`
 
 > Note: Baseline was run with v2 pipeline. Not directly re-runnable with v3.
 
@@ -15,7 +17,7 @@
 
 **Changes:**
 - Rewrote all 100 few-shot examples across 5 files (code_snippet, encrypted_text, markup_noise, math_fact, random_fact)
-- Each `mutated_distractor` verified to be 50-60 Qwen3-8B tokens
+- 65/100 mutated_distractors verified to be 50-60 Qwen3-8B tokens (up from 16/100)
 - Eliminated duplicate content (e.g., repeated octopus facts)
 - Ensured quality: each mutation matches target type, is coherent, and is a plausible distractor
 
@@ -24,15 +26,18 @@
 **Status:** SUBMITTED
 **Cluster:** ord
 **Expname prefix:** `robustness-v3-exp1`
+**First job ID:** 26815290
 **Output path:** `/workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp1`
+**Log path:** `/workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp1/logs/`
 
 **Launch command:**
 ```bash
-python recipes/robustness-attacks-v3/launch_attack.py \
+NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK=1 python recipes/robustness-attacks-v3/launch_attack.py \
     --cluster ord \
     --output-folder /workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp1 \
     --model-name /hf_models/Qwen3-8B \
     --iter-num 100 \
+    --iter-batch-size 100 \
     --expname-prefix robustness-v3-exp1 \
     --mutation-model /hf_models/gpt-oss-120b \
     --benchmark gpqa \
@@ -60,11 +65,13 @@ python recipes/robustness-attacks-v3/launch_attack.py \
 **Status:** SUBMITTED
 **Cluster:** ord
 **Expname prefix:** `robustness-v3-exp2`
+**First job ID:** _tbd_
 **Output path:** `/workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2`
+**Log path:** `/workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2/logs/`
 
 **Launch command:**
 ```bash
-python recipes/robustness-attacks-v3/launch_attack.py \
+NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK=1 python recipes/robustness-attacks-v3/launch_attack.py \
     --cluster ord \
     --output-folder /workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2 \
     --model-name /hf_models/Qwen3-8B \
