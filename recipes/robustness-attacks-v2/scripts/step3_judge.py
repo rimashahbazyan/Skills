@@ -59,38 +59,68 @@ def write_json(path: Path, data: dict) -> None:
 # ----- Judge Logic --------
 # ==========================
 
-def call_judge(
-    candidate: Dict,
-    parent: Dict,
+def _judge_single_call(
     judge_prompt: dict,
-) -> tuple[bool, str]:
-    """Call the LLM judge to compare old vs. new distractor.
-
-    Returns (judge_more_adversarial, raw_response).
-    """
-    pos_desc = _POSITION_DESCRIPTIONS.get(
-        str(candidate["position"]), str(candidate["position"])
-    )
+    distractor_type: str,
+    position_description: str,
+    distractor_a: str,
+    distractor_b: str,
+) -> str:
+    """Make a single judge LLM call and return the raw response."""
     user_msg = judge_prompt["user"].format(
-        distractor_type=candidate["type"],
-        position_description=pos_desc,
-        old_distractor=parent["distractor"],
-        new_distractor=candidate["distractor"],
+        distractor_type=distractor_type,
+        position_description=position_description,
+        distractor_a=distractor_a,
+        distractor_b=distractor_b,
     )
 
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": judge_prompt["system"]},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.0,
         max_tokens=10,
     )
 
-    raw = response.choices[0].message.content.strip()
-    more_adversarial = "YES" in raw.upper()
-    return more_adversarial, raw
+    return response.choices[0].message.content.strip()
+
+
+def call_judge(
+    candidate: Dict,
+    parent: Dict,
+    judge_prompt: dict,
+) -> tuple[bool, str, str]:
+    """Call the LLM judge twice with swapped order to counter positional bias.
+
+    Forward call:  A=old, B=new  → "B" means new is more adversarial
+    Reverse call:  A=new, B=old  → "A" means new is more adversarial
+
+    Returns (more_adversarial, raw_forward, raw_reverse).
+    Accept if *either* ordering says the new distractor is more adversarial.
+    """
+    pos_desc = _POSITION_DESCRIPTIONS.get(
+        str(candidate["position"]), str(candidate["position"])
+    )
+
+    # Forward: A=old, B=new — answer "B" means new wins
+    raw_forward = _judge_single_call(
+        judge_prompt, candidate["type"], pos_desc,
+        distractor_a=parent["distractor"],
+        distractor_b=candidate["distractor"],
+    )
+    forward_new_wins = "B" in raw_forward.upper()
+
+    # Reverse: A=new, B=old — answer "A" means new wins
+    raw_reverse = _judge_single_call(
+        judge_prompt, candidate["type"], pos_desc,
+        distractor_a=candidate["distractor"],
+        distractor_b=parent["distractor"],
+    )
+    reverse_new_wins = "A" in raw_reverse.upper()
+
+    more_adversarial = forward_new_wins or reverse_new_wins
+    return more_adversarial, raw_forward, raw_reverse
 
 
 # ==========================
@@ -181,10 +211,10 @@ def main() -> None:
                 "new_distractor": candidate["distractor"],
             }
         else:
-            more_adversarial, raw = call_judge(candidate, parent, judge_prompt)
+            more_adversarial, raw_forward, raw_reverse = call_judge(candidate, parent, judge_prompt)
             logging.info(
-                "  type=%s pos=%s — judge response: %r → more_adversarial=%s",
-                distractor_type, position, raw, more_adversarial,
+                "  type=%s pos=%s — judge forward=%r reverse=%r → more_adversarial=%s",
+                distractor_type, position, raw_forward, raw_reverse, more_adversarial,
             )
             result = {
                 "type": distractor_type,
@@ -192,7 +222,8 @@ def main() -> None:
                 "distractor_id": candidate["id"],
                 "parent_id": candidate.get("parent_id"),
                 "judge_more_adversarial": more_adversarial,
-                "judge_raw_response": raw,
+                "judge_raw_response_forward": raw_forward,
+                "judge_raw_response_reverse": raw_reverse,
                 "old_distractor": parent["distractor"],
                 "new_distractor": candidate["distractor"],
             }

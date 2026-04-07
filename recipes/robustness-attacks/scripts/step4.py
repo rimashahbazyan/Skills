@@ -29,8 +29,18 @@ def write_jsonl(path: Path, items: List[Dict]) -> None:
             f.write(json.dumps(item) + "\n")
 
 
-def load_score(output_folder: Path, iteration_id: str, distractor_type: str, position: str) -> float:
-    """Read symbolic_correct from the metrics.json for a given (type, position) eval."""
+def load_score(
+    output_folder: Path, iteration_id: str, distractor_type: str, position: str
+) -> Optional[float]:
+    """Read symbolic_correct from the metrics.json for a given (type, position) eval.
+
+    Returns None if the evaluation failed, so that step4 can revert to the
+    parent instead of treating 0.0 as a successful attack.  A failure is
+    detected when either:
+      - num_entries == 0  (no questions evaluated at all), or
+      - no_answer == 100  (model produced empty generations for every question,
+        e.g. due to server timeouts).
+    """
     metrics_path = (
         output_folder
         / "logs"
@@ -48,7 +58,27 @@ def load_score(output_folder: Path, iteration_id: str, distractor_type: str, pos
         metrics = json.load(f)
 
     benchmark_key = f"iter{iteration_id}"
-    return metrics[benchmark_key]["pass@1"]["symbolic_correct"]
+    pass_at_1 = metrics[benchmark_key]["pass@1"]
+
+    num_entries = pass_at_1.get("num_entries", 0)
+    no_answer = pass_at_1.get("no_answer", 0.0)
+
+    if num_entries == 0:
+        logging.warning(
+            "  type=%s pos=%s — eval has num_entries=0, treating as failed evaluation.",
+            distractor_type, position,
+        )
+        return None
+
+    if no_answer == 100.0:
+        logging.warning(
+            "  type=%s pos=%s — eval has no_answer=100%% (%d entries, all empty generations), "
+            "treating as failed evaluation.",
+            distractor_type, position, num_entries,
+        )
+        return None
+
+    return pass_at_1["symbolic_correct"]
 
 
 def build_parent_index(output_folder: Path) -> Dict[Tuple[str, str], Dict]:
@@ -71,19 +101,42 @@ def select_distractor(
     candidate: Dict,
     parent: Optional[Dict],
 ) -> Dict:
-    """Return candidate if it worsened accuracy (lower is harder), otherwise revert to parent."""
+    """Return candidate if it worsened accuracy (lower is harder), otherwise revert to parent.
+
+    If eval_score is None (failed evaluation), reverts to parent to avoid
+    treating a broken eval as a successful attack.
+    """
     candidate_score = candidate["eval_score"]
     parent_score = candidate.get("parent_score")
 
     if parent_score is None:
         # First iteration — no comparison possible, always keep candidate.
         logging.info(
-            "  type=%s pos=%s score=%.2f — first iteration, keeping candidate.",
+            "  type=%s pos=%s score=%s — first iteration, keeping candidate.",
             candidate["type"],
             candidate["position"],
             candidate_score,
         )
         return candidate
+
+    # Failed evaluation — revert to parent rather than treating 0.0 as a win.
+    if candidate_score is None:
+        if parent is None:
+            logging.warning(
+                "  type=%s pos=%s — eval failed and parent not found; keeping candidate.",
+                candidate["type"],
+                candidate["position"],
+            )
+            return candidate
+        reverted = dict(parent)
+        reverted["eval_score"] = parent_score
+        logging.warning(
+            "  type=%s pos=%s — eval failed (num_entries=0), reverted to parent (score=%.2f).",
+            candidate["type"],
+            candidate["position"],
+            parent_score,
+        )
+        return reverted
 
     if candidate_score < parent_score:
         logging.info(

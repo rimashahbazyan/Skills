@@ -140,7 +140,7 @@ def schedule_iteration(
 	judge_model: Optional[str] = None,
 	judge_server_gpus: int = 8,
 	judge_server_nodes: int = 1,
-	judge_max_model_len: int = 4096,
+	judge_max_model_len: int = 16384,
 ) -> Any:
 	"""Schedule all steps for a single iteration. Returns the step4 experiment."""
 	iteration_expname = f"{expname_prefix}_iter{current_iteration}"
@@ -324,7 +324,7 @@ def run_iterative_attack(
 	judge_model: Optional[str] = None,
 	judge_server_gpus: int = 8,
 	judge_server_nodes: int = 1,
-	judge_max_model_len: int = 4096,
+	judge_max_model_len: int = 16384,
 ) -> None:
 	"""Submit iterations in batches of iter_batch_size, waiting between batches."""
 	setup_logging(disable_hydra_logs=False, use_rich=True)
@@ -513,9 +513,8 @@ def main() -> None:
 	parser.add_argument(
 		"--judge-max-model-len",
 		type=int,
-		default=4096,
+		default=16384,
 		help="Max token context length for the judge vLLM server (--max-model-len). "
-		     "Keep low (e.g. 4096) to reduce GPU memory pressure for large judge models. "
 		     "Only used when --eval-mode llm-judge and --judge-model is set.",
 	)
 

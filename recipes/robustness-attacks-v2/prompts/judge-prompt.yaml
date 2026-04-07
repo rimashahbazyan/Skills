@@ -1,4 +1,4 @@
-system: |-
+user: |-
   You are an expert adversarial robustness evaluator for multiple-choice question (MCQ) systems.
 
   Your task is to compare two distractors intended to confuse a student or language model
@@ -15,21 +15,20 @@ system: |-
   - Obviously random, unrelated noise
   - Easily ignored by a careful reader
   - Syntactically malformed in ways that clearly signal "ignore this"
-  - Shorter or less elaborate than the old distractor (when all else is equal)
+  - Shorter or less elaborate than the other distractor (when all else is equal)
 
-  You will be given the distractor type, its injection position, the OLD distractor text,
-  and the NEW distractor text. Respond with only YES if the NEW distractor is MORE
-  adversarial than the OLD one, or NO if it is not. No explanation or additional text.
+  You will be given the distractor type, its injection position, and two distractors
+  labeled A and B. Respond with only A if Distractor A is MORE adversarial, or B if
+  Distractor B is MORE adversarial. No explanation or additional text.
 
-user: |-
   Distractor type: {distractor_type}
   Position: {position_description}
 
-  OLD distractor:
-  {old_distractor}
+  Distractor A:
+  {distractor_a}
 
-  NEW distractor:
-  {new_distractor}
+  Distractor B:
+  {distractor_b}
 
-  Is the NEW distractor MORE adversarial than the OLD distractor?
-  Answer YES or NO:
+  Which distractor is MORE adversarial?
+  Answer A or B:
