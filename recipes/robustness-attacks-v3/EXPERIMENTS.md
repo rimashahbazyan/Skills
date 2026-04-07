@@ -55,9 +55,9 @@ python recipes/robustness-attacks-v3/launch_attack.py \
 - Mutation runs on CPU partition (no GPU needed for step1)
 - `seed` parameter disabled for external APIs (not supported by all providers)
 
-**Config:** Qwen3-8B eval target, Claude Sonnet 4.5 mutator via NVIDIA API, original few-shot examples, 8 GPUs eval, v3 pipeline, 100 iterations on ord
+**Config:** Qwen3-8B eval target, Claude Sonnet 4.5 mutator via NVIDIA API, original few-shot examples, 8 GPUs eval, v3 pipeline, 50 iterations on ord
 
-**Status:** _not submitted_
+**Status:** SUBMITTED
 **Cluster:** ord
 **Expname prefix:** `robustness-v3-exp2`
 **Output path:** `/workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2`
@@ -68,7 +68,7 @@ python recipes/robustness-attacks-v3/launch_attack.py \
     --cluster ord \
     --output-folder /workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2 \
     --model-name /hf_models/Qwen3-8B \
-    --iter-num 100 \
+    --iter-num 50 \
     --expname-prefix robustness-v3-exp2 \
     --mutation-api-url https://inference-api.nvidia.com \
     --mutation-api-model azure/anthropic/claude-sonnet-4-5 \

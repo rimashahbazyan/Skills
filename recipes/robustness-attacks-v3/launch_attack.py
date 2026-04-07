@@ -134,6 +134,10 @@ def schedule_iteration(
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
+	mutation_api_url: Optional[str] = None,
+	mutation_api_model: Optional[str] = None,
+	mutation_api_key_env: str = "INFERENCE_NVIDIA_KEY",
+	few_shot_dir: Optional[str] = None,
 	prev_eval_expnames: Optional[list] = None,
 	temperature: float = 1.0,
 	seed_base: int = 42,
@@ -169,6 +173,14 @@ def schedule_iteration(
 			f" --mutation-model {mutation_model}"
 			f" --mutation-endpoint http://localhost:{_MUTATION_SERVER_PORT}/v1"
 		)
+	elif mutation_api_url:
+		step1_cmd += (
+			f" --mutation-api-url {mutation_api_url}"
+			f" --mutation-api-model {mutation_api_model}"
+			f" --mutation-api-key-env {mutation_api_key_env}"
+		)
+	if few_shot_dir:
+		step1_cmd += f" --few-shot-dir {few_shot_dir}"
 
 	step1_kwargs = dict(
 		ctx=wrap_arguments(step1_cmd),
@@ -288,6 +300,10 @@ def run_iterative_attack(
 	max_model_len: int = 40960,
 	mutation_model: Optional[str] = None,
 	mutation_server_gpus: int = 8,
+	mutation_api_url: Optional[str] = None,
+	mutation_api_model: Optional[str] = None,
+	mutation_api_key_env: str = "INFERENCE_NVIDIA_KEY",
+	few_shot_dir: Optional[str] = None,
 	temperature: float = 1.0,
 	seed_base: int = 42,
 	eval_mode: str = "benchmark",
@@ -334,6 +350,10 @@ def run_iterative_attack(
 				max_model_len=max_model_len,
 				mutation_model=mutation_model,
 				mutation_server_gpus=mutation_server_gpus,
+				mutation_api_url=mutation_api_url,
+				mutation_api_model=mutation_api_model,
+				mutation_api_key_env=mutation_api_key_env,
+				few_shot_dir=few_shot_dir,
 				prev_eval_expnames=prev_eval_expnames,
 				temperature=temperature,
 				seed_base=seed_base,
@@ -465,6 +485,37 @@ def main() -> None:
 		help="Number of GPUs for the mutation vLLM server. Only used when --mutation-model is set.",
 	)
 	parser.add_argument(
+		"--mutation-api-url",
+		type=str,
+		default=None,
+		help="Base URL for an external OpenAI-compatible mutation API "
+		     "(e.g. https://inference-api.nvidia.com). "
+		     "Takes precedence over Azure when set. Runs on CPU partition (no GPU needed).",
+	)
+	parser.add_argument(
+		"--mutation-api-model",
+		type=str,
+		default=None,
+		help="Model name for the external mutation API "
+		     "(e.g. azure/anthropic/claude-sonnet-4-5). "
+		     "Required when --mutation-api-url is set.",
+	)
+	parser.add_argument(
+		"--mutation-api-key-env",
+		type=str,
+		default="INFERENCE_NVIDIA_KEY",
+		help="Environment variable containing the API key for the external mutation API. "
+		     "Default: NVIDIA_API_KEY.",
+	)
+	parser.add_argument(
+		"--few-shot-dir",
+		type=str,
+		default=None,
+		help="Path to directory containing few-shot example JSONL files. "
+		     "Defaults to prompts/few-shot-examples/ next to the recipe. "
+		     "Use prompts/few-shot-examples-original/ for pre-Exp1 examples.",
+	)
+	parser.add_argument(
 		"--temperature",
 		type=float,
 		default=1.0,
@@ -533,6 +584,10 @@ def main() -> None:
 		max_model_len=args.max_model_len,
 		mutation_model=args.mutation_model,
 		mutation_server_gpus=args.mutation_server_gpus,
+		mutation_api_url=args.mutation_api_url,
+		mutation_api_model=args.mutation_api_model,
+		mutation_api_key_env=args.mutation_api_key_env,
+		few_shot_dir=args.few_shot_dir,
 		temperature=args.temperature,
 		seed_base=args.seed_base,
 		eval_mode=args.eval_mode,

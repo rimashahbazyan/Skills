@@ -36,6 +36,10 @@ client = AzureOpenAI(
     api_key=AZURE_KEY,
 )
 
+# Whether to pass `seed` to the chat completions call.  Disabled for external
+# APIs (e.g. NVIDIA inference API) where the provider may not support it.
+_PASS_SEED = True
+
 # ==========================
 # ---- Prompt Loading ------
 # ==========================
@@ -55,6 +59,7 @@ _MUTATION_PROMPT = _load_mutation_prompt()
 # ==========================
 
 # Directory containing one JSONL file per source type.
+# Overridden at runtime via --few-shot-dir.
 _FEW_SHOT_DIR = _PROMPTS_DIR / "few-shot-examples"
 
 # Maps internal type names to the display names used in the mutation prompt
@@ -180,12 +185,10 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
         {"role": "user", "content": user_prompt},
     ]
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        temperature=temperature,
-        seed=seed,
-    )
+    kwargs = dict(model=MODEL, messages=messages, temperature=temperature)
+    if _PASS_SEED:
+        kwargs["seed"] = seed
+    response = client.chat.completions.create(**kwargs)
 
     raw = response.choices[0].message.content.strip()
     # Strip surrounding quotes if the model followed the output format literally.
@@ -288,6 +291,36 @@ def main():
              "Only used when --mutation-model is set.",
     )
     parser.add_argument(
+        "--mutation-api-url",
+        type=str,
+        default=None,
+        help="Base URL for an external OpenAI-compatible mutation API "
+             "(e.g. https://inference-api.nvidia.com). "
+             "Takes precedence over Azure when set.",
+    )
+    parser.add_argument(
+        "--mutation-api-model",
+        type=str,
+        default=None,
+        help="Model name for the external mutation API "
+             "(e.g. azure/anthropic/claude-sonnet-4-5). "
+             "Required when --mutation-api-url is set.",
+    )
+    parser.add_argument(
+        "--mutation-api-key-env",
+        type=str,
+        default="INFERENCE_NVIDIA_KEY",
+        help="Environment variable containing the API key for the external mutation API. "
+             "Default: NVIDIA_API_KEY.",
+    )
+    parser.add_argument(
+        "--few-shot-dir",
+        type=str,
+        default=None,
+        help="Path to directory containing few-shot example JSONL files. "
+             "Defaults to prompts/few-shot-examples/ next to the recipe.",
+    )
+    parser.add_argument(
         "--benchmark",
         type=str,
         default=None,
@@ -315,14 +348,26 @@ def main():
     )
     args = parser.parse_args()
 
+    # Override few-shot examples directory if specified.
+    global _FEW_SHOT_DIR
+    if args.few_shot_dir:
+        _FEW_SHOT_DIR = Path(args.few_shot_dir)
+        print(f"Using few-shot examples from: {_FEW_SHOT_DIR}")
+
     # If a local model is requested, wait for the co-process vLLM server
     # (started by NeMo-Run alongside this job) and swap out the Azure client.
+    global client, MODEL, _PASS_SEED
     if args.mutation_model:
         wait_for_local_server(args.mutation_endpoint)
-        global client, MODEL
         client = OpenAI(base_url=args.mutation_endpoint, api_key="EMPTY")
         MODEL = args.mutation_model
         print(f"Using local model: {args.mutation_model} @ {args.mutation_endpoint}")
+    elif args.mutation_api_url:
+        api_key = os.getenv(args.mutation_api_key_env, "")
+        client = OpenAI(base_url=args.mutation_api_url, api_key=api_key)
+        MODEL = args.mutation_api_model
+        _PASS_SEED = False  # external APIs may not support seed
+        print(f"Using external API model: {MODEL} @ {args.mutation_api_url}")
     else:
         print(f"Using Azure model: {MODEL} @ {AZURE_ENDPOINT}")
 
