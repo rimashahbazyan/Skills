@@ -185,7 +185,7 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
         {"role": "user", "content": user_prompt},
     ]
 
-    kwargs = dict(model=MODEL, messages=messages, temperature=temperature, max_tokens=1024)
+    kwargs = dict(model=MODEL, messages=messages, temperature=temperature, max_tokens=8192)
     if _PASS_SEED:
         kwargs["seed"] = seed
 
