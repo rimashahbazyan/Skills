@@ -244,7 +244,7 @@ def schedule_iteration(
 					data_dir=f"{output_folder}",
 					run_after=[step1_expname],
 					auto_summarize_results=False,
-					sbatch_kwargs={"time": "00:20:00"},
+					sbatch_kwargs={"time": "01:00:00"},
 				)
 
 	else:  # llm-judge
