@@ -117,6 +117,37 @@ def _iteration_complete(cluster_config: dict, output_folder: str, iteration: int
 _MUTATION_SERVER_PORT = 5000  # default port NeMo-Run uses for a co-process vLLM server
 
 
+def _find_failed_evals(
+	cluster_config: dict,
+	output_folder: str,
+	log_dir: str,
+	iterations: range,
+	expname_prefix: str,
+	benchmark: str,
+	subset: str,
+	distractor_types: list,
+	positions: list,
+) -> list:
+	"""Check which eval slots are missing output files on the cluster.
+
+	Returns list of (iteration_id, distractor_type, position) tuples for failed evals.
+	"""
+	failed = []
+	for iteration in iterations:
+		for distractor_type in distractor_types:
+			for position in positions:
+				output_path = pipeline_utils.get_unmounted_path(
+					cluster_config,
+					f"{log_dir}/iter{iteration}/step3/type-{distractor_type}_pos-{position}"
+					f"/eval-results/iter{iteration}/output-rs0.jsonl",
+				)
+				if not pipeline_utils.cluster_path_exists(cluster_config, output_path):
+					failed.append((iteration, distractor_type, position))
+	if failed:
+		LOG.warning(f"Found {len(failed)} missing eval output(s): {failed}")
+	return failed
+
+
 def schedule_iteration(
 	*,
 	cluster: str,
@@ -318,6 +349,16 @@ def run_iterative_attack(
 
 	LOG.info(f"Starting iterative attack: {iter_num} iterations total, batch size {iter_batch_size}")
 
+	# Compute positions once from prompt files (used for retry logic).
+	pattern = "recipes/robustness-attacks-v3/prompts/eval-prompt-*.yaml"
+	prompt_files = glob.glob(pattern)
+	positions = sorted(
+		set(
+			os.path.splitext(os.path.basename(fp))[0].split("eval-prompt-")[1]
+			for fp in prompt_files
+		)
+	)
+
 	prev_eval_expnames: Optional[list] = None
 	prev_iteration: Optional[int] = None
 
@@ -390,6 +431,65 @@ def run_iterative_attack(
 			LOG.info(f"Waiting for batch {batch_start}–{batch_end} to complete...")
 			last_exp._wait_for_jobs(last_exp.jobs)
 			LOG.info(f"Batch {batch_start}–{batch_end} completed")
+
+			# Check for failed eval jobs and retry once.
+			# Collect all eval output dirs for all iterations in this batch.
+			failed_evals = _find_failed_evals(
+				cluster_config, output_folder, log_dir,
+				range(batch_start, batch_end + 1),
+				expname_prefix, benchmark, subset,
+				DISTRACTOR_TYPES, positions if eval_mode == "benchmark" else [],
+			)
+			if failed_evals:
+				LOG.warning(
+					f"Batch {batch_start}–{batch_end}: {len(failed_evals)} eval(s) failed, retrying..."
+				)
+				retry_run_after = []
+				for iter_id, distractor_type, position in failed_evals:
+					retry_expname = f"{expname_prefix}_iter{iter_id}_eval_type-{distractor_type}_pos-{position}-retry"
+					split = f"{benchmark}_{subset}__type-{distractor_type}__pos-{position}"
+					prompt_template = f'/nemo_run/code/recipes/robustness-attacks-v3/prompts/eval-prompt-{position}.yaml'
+					retry_run_after.append(retry_expname)
+					eval(
+						ctx=wrap_arguments(
+							f"++inference.tokens_to_generate={32768} "
+							f"++max_concurrent_requests=512 "
+							f"++inference.endpoint_type=text "
+							f"++skip_filled=True "
+							f"++parse_reasoning=True "
+							f"++prompt_config={prompt_template} "
+						),
+						cluster=cluster,
+						expname=retry_expname,
+						output_dir=f"{log_dir}/iter{iter_id}/step3/type-{distractor_type}_pos-{position}",
+						log_dir=f"{log_dir}/iter{iter_id}/step3/type-{distractor_type}_pos-{position}/logs",
+						model=model_name,
+						server_type="vllm",
+						server_gpus=server_gpus,
+						server_args=f"--max-model-len {max_model_len}",
+						benchmarks=f"iter{iter_id}:{1}",
+						num_chunks=1,
+						split=split,
+						data_dir=f"{output_folder}",
+						auto_summarize_results=False,
+						sbatch_kwargs={"time": "01:00:00"},
+					)
+
+				# Re-run trailing step4 after retries complete
+				step4_retry_expname = f"{expname_prefix}_iter{last_iteration}_step4_retry"
+				retry_exp = run_cmd(
+					ctx=wrap_arguments(step4_cmd),
+					cluster=cluster,
+					container=container,
+					expname=step4_retry_expname,
+					log_dir=f"{log_dir}/iter{last_iteration}/step4",
+					run_after=retry_run_after,
+					partition=cluster_config.get("cpu_partition"),
+				)
+				LOG.info(f"Waiting for {len(failed_evals)} retried eval(s) + step4 retry...")
+				retry_exp._wait_for_jobs(retry_exp.jobs)
+				LOG.info(f"Retry for batch {batch_start}–{batch_end} completed")
+
 			# Reset for next batch — step4 already ran, no need to re-run
 			prev_eval_expnames = None
 			prev_iteration = None

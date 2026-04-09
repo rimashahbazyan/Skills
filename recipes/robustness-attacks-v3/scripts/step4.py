@@ -59,7 +59,11 @@ def load_score(
         / "metrics.json"
     )
     if not metrics_path.exists():
-        raise FileNotFoundError(f"Metrics file not found: {metrics_path}")
+        logging.warning(
+            "  type=%s pos=%s — metrics.json not found (eval likely failed/timed out), treating as failed.",
+            distractor_type, position,
+        )
+        return None
 
     with open(metrics_path) as f:
         metrics = json.load(f)
@@ -242,6 +246,8 @@ def run_summarize_results(output_folder: Path, iteration_id: str, distractor_typ
 
     Called inline by step4 so that summarize does not need to be a separate Slurm job.
     Skips slots where metrics.json already exists.
+    Skips slots where eval output is missing (eval job failed/timed out) — those
+    slots will get eval_score=None and revert to parent in the selection step.
     """
     for distractor_type in distractor_types:
         for position in positions:
@@ -256,6 +262,16 @@ def run_summarize_results(output_folder: Path, iteration_id: str, distractor_typ
                 logging.info("  %s: metrics.json already exists, skipping summarize.", slot_label)
                 continue
 
+            # Check if eval output exists before trying to summarize
+            output_dir = results_folder / f"iter{iteration_id}"
+            output_files = list(output_dir.glob("output*.jsonl")) if output_dir.exists() else []
+            if not output_files:
+                logging.warning(
+                    "  %s: no eval output files found (eval job likely failed/timed out), skipping summarize.",
+                    slot_label,
+                )
+                continue
+
             cmd = [
                 sys.executable, "-m", "nemo_skills.pipeline.summarize_results",
                 str(results_folder),
@@ -266,8 +282,7 @@ def run_summarize_results(output_folder: Path, iteration_id: str, distractor_typ
             logging.info("  Summarizing: %s", slot_label)
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                logging.error("  Summarize FAILED for %s:\n%s", slot_label, result.stderr)
-                raise RuntimeError(f"Summarize failed for {slot_label}")
+                logging.warning("  Summarize FAILED for %s (will revert to parent):\n%s", slot_label, result.stderr)
 
 
 def main() -> None:
@@ -291,7 +306,7 @@ def main() -> None:
         logging.info("Running summarize_results for all slots...")
         run_summarize_results(output_folder, iteration_id, DISTRACTOR_TYPES, _positions)
 
-    # Pre-flight: validate all score sources exist before touching anything.
+    # Pre-flight: check which score sources exist. Missing slots will revert to parent.
     missing = []
     if eval_mode == "benchmark":
         for distractor_type in DISTRACTOR_TYPES:
@@ -304,9 +319,10 @@ def main() -> None:
                 if not metrics_path.exists():
                     missing.append(f"{distractor_type}_pos-{position}")
         if missing:
-            raise RuntimeError(
-                f"Iteration {iteration_id}: metrics.json missing for {len(missing)} slot(s) — "
-                f"aborting to prevent silent revert-to-parent.\nMissing: {missing}"
+            logging.warning(
+                "Iteration %s: metrics.json missing for %d/%d slot(s) — "
+                "those slots will revert to parent.\nMissing: %s",
+                iteration_id, len(missing), len(DISTRACTOR_TYPES) * len(_positions), missing,
             )
     else:  # llm-judge
         for distractor_type in DISTRACTOR_TYPES:
