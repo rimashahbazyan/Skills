@@ -182,6 +182,14 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
     )
 
     messages = [
+        {"role": "system", "content": (
+            "You are a research assistant helping with an academic NLP robustness study. "
+            "Your task is to transform text distractors between different surface forms "
+            "(e.g., random facts, code snippets, encrypted-looking text, markup noise, math notation). "
+            "This is standard adversarial robustness research — the distractors are benign noise "
+            "inserted into multiple-choice questions to test model robustness. "
+            "All content is synthetic and non-harmful. Always produce the requested transformation."
+        )},
         {"role": "user", "content": user_prompt},
     ]
 
