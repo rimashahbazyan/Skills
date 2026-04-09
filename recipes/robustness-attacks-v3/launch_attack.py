@@ -169,6 +169,7 @@ def schedule_iteration(
 	mutation_api_model: Optional[str] = None,
 	mutation_api_key_env: str = "INFERENCE_NVIDIA_KEY",
 	few_shot_dir: Optional[str] = None,
+	max_distractor_tokens: int = 0,
 	prev_eval_expnames: Optional[list] = None,
 	temperature: float = 1.0,
 	seed_base: int = 42,
@@ -212,6 +213,8 @@ def schedule_iteration(
 		)
 	if few_shot_dir:
 		step1_cmd += f" --few-shot-dir {few_shot_dir}"
+	if max_distractor_tokens > 0:
+		step1_cmd += f" --max-distractor-tokens {max_distractor_tokens}"
 
 	step1_kwargs = dict(
 		ctx=wrap_arguments(step1_cmd),
@@ -335,6 +338,7 @@ def run_iterative_attack(
 	mutation_api_model: Optional[str] = None,
 	mutation_api_key_env: str = "INFERENCE_NVIDIA_KEY",
 	few_shot_dir: Optional[str] = None,
+	max_distractor_tokens: int = 0,
 	temperature: float = 1.0,
 	seed_base: int = 42,
 	eval_mode: str = "benchmark",
@@ -395,6 +399,7 @@ def run_iterative_attack(
 				mutation_api_model=mutation_api_model,
 				mutation_api_key_env=mutation_api_key_env,
 				few_shot_dir=few_shot_dir,
+				max_distractor_tokens=max_distractor_tokens,
 				prev_eval_expnames=prev_eval_expnames,
 				temperature=temperature,
 				seed_base=seed_base,
@@ -616,6 +621,13 @@ def main() -> None:
 		     "Use prompts/few-shot-examples-original/ for pre-Exp1 examples.",
 	)
 	parser.add_argument(
+		"--max-distractor-tokens",
+		type=int,
+		default=0,
+		help="Maximum Qwen3-8B tokens per distractor. 0 = no truncation. "
+		     "Recommended: 60 (matches few-shot target length).",
+	)
+	parser.add_argument(
 		"--temperature",
 		type=float,
 		default=1.0,
@@ -688,6 +700,7 @@ def main() -> None:
 		mutation_api_model=args.mutation_api_model,
 		mutation_api_key_env=args.mutation_api_key_env,
 		few_shot_dir=args.few_shot_dir,
+		max_distractor_tokens=args.max_distractor_tokens,
 		temperature=args.temperature,
 		seed_base=args.seed_base,
 		eval_mode=args.eval_mode,

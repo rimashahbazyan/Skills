@@ -222,7 +222,25 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
     return original_item["distractor"]
 
 
-def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_base: int) -> List[Dict]:
+_TRUNCATION_TOKENIZER = None
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Truncate text to max_tokens using the Qwen3-8B tokenizer."""
+    global _TRUNCATION_TOKENIZER
+    if _TRUNCATION_TOKENIZER is None:
+        from transformers import AutoTokenizer
+        _TRUNCATION_TOKENIZER = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+    tok = _TRUNCATION_TOKENIZER
+    token_ids = tok.encode(text)
+    if len(token_ids) <= max_tokens:
+        return text
+    truncated = tok.decode(token_ids[:max_tokens], skip_special_tokens=True)
+    print(f"  Truncated distractor from {len(token_ids)} to {max_tokens} tokens")
+    return truncated
+
+
+def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_base: int, max_distractor_tokens: int = 0) -> List[Dict]:
     """Refresh every grid slot while keeping the full type grid intact.
 
     For each slot (type=D1, position=P):
@@ -256,6 +274,9 @@ def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_
         )
 
         new_text = perflab_mutation_call(source_item, target_type, temperature, seed)
+
+        if max_distractor_tokens > 0:
+            new_text = _truncate_to_tokens(new_text, max_distractor_tokens)
 
         updated_item = item.copy()
         updated_item["parent_id"] = item["id"]
@@ -346,6 +367,13 @@ def main():
              "Defaults to prompts/few-shot-examples/ next to the recipe.",
     )
     parser.add_argument(
+        "--max-distractor-tokens",
+        type=int,
+        default=0,
+        help="Maximum Qwen3-8B tokens per distractor. 0 = no truncation. "
+             "Recommended: 60 (matches few-shot target length).",
+    )
+    parser.add_argument(
         "--benchmark",
         type=str,
         default=None,
@@ -423,7 +451,7 @@ def main():
 
     archive_file = Path(args.output_folder) / "archive" / f"iter{args.iteration_id}.jsonl"
 
-    state = mutate_state(state, args.iteration_id, args.temperature, args.seed_base)
+    state = mutate_state(state, args.iteration_id, args.temperature, args.seed_base, args.max_distractor_tokens)
 
     save_state(state, archive_file)
 
