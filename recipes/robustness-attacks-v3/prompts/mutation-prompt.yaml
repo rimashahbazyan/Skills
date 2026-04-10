@@ -15,7 +15,7 @@ user_template: |-
   If the Target Type involves noise, corruption, markup, formatting artifacts, \
   encoding artifacts, or structural distortion, apply those aggressively.
 
-  Keep the output distractor concise — no more than 500 tokens.
+  Keep the output distractor concise — no more than {max_tokens} tokens.
 
   {examples_block}
   ---

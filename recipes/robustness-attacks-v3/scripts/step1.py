@@ -161,7 +161,7 @@ def _format_examples(examples: List[Dict], source_display: str, target_display: 
     return "\n".join(lines)
 
 
-def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float, seed: int) -> str:
+def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float, seed: int, max_distractor_tokens: int = 0) -> str:
     """
     Call the LLM to mutate a distractor into a new type.
     Position remains the same; type changes.
@@ -179,6 +179,7 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
         source_display=source_display,
         distractor=original_item["distractor"],
         target_display=target_display,
+        max_tokens=max_distractor_tokens if max_distractor_tokens > 0 else 500,
     )
 
     messages = [
@@ -273,7 +274,7 @@ def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_
             f"source type={source_item['type']} ID={source_item['id']} -> {target_type}"
         )
 
-        new_text = perflab_mutation_call(source_item, target_type, temperature, seed)
+        new_text = perflab_mutation_call(source_item, target_type, temperature, seed, max_distractor_tokens)
 
         if max_distractor_tokens > 0:
             new_text = _truncate_to_tokens(new_text, max_distractor_tokens)
