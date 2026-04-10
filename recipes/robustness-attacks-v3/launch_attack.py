@@ -170,6 +170,7 @@ def schedule_iteration(
 	mutation_api_key_env: str = "INFERENCE_NVIDIA_KEY",
 	few_shot_dir: Optional[str] = None,
 	max_distractor_tokens: int = 0,
+	mutation_prompt: str = "mutation-prompt.yaml",
 	prev_eval_expnames: Optional[list] = None,
 	temperature: float = 1.0,
 	seed_base: int = 42,
@@ -215,6 +216,8 @@ def schedule_iteration(
 		step1_cmd += f" --few-shot-dir {few_shot_dir}"
 	if max_distractor_tokens > 0:
 		step1_cmd += f" --max-distractor-tokens {max_distractor_tokens}"
+	if mutation_prompt != "mutation-prompt.yaml":
+		step1_cmd += f" --mutation-prompt {mutation_prompt}"
 
 	step1_kwargs = dict(
 		ctx=wrap_arguments(step1_cmd),
@@ -339,6 +342,7 @@ def run_iterative_attack(
 	mutation_api_key_env: str = "INFERENCE_NVIDIA_KEY",
 	few_shot_dir: Optional[str] = None,
 	max_distractor_tokens: int = 0,
+	mutation_prompt: str = "mutation-prompt.yaml",
 	temperature: float = 1.0,
 	seed_base: int = 42,
 	eval_mode: str = "benchmark",
@@ -400,6 +404,7 @@ def run_iterative_attack(
 				mutation_api_key_env=mutation_api_key_env,
 				few_shot_dir=few_shot_dir,
 				max_distractor_tokens=max_distractor_tokens,
+				mutation_prompt=mutation_prompt,
 				prev_eval_expnames=prev_eval_expnames,
 				temperature=temperature,
 				seed_base=seed_base,
@@ -628,6 +633,14 @@ def main() -> None:
 		     "Recommended: 60 (matches few-shot target length).",
 	)
 	parser.add_argument(
+		"--mutation-prompt",
+		type=str,
+		default="mutation-prompt.yaml",
+		help="Filename of the mutation prompt YAML in prompts/ directory. "
+		     "Default: mutation-prompt.yaml. Use mutation-prompt-with-parent.yaml "
+		     "to include the parent distractor in the prompt.",
+	)
+	parser.add_argument(
 		"--temperature",
 		type=float,
 		default=1.0,
@@ -701,6 +714,7 @@ def main() -> None:
 		mutation_api_key_env=args.mutation_api_key_env,
 		few_shot_dir=args.few_shot_dir,
 		max_distractor_tokens=args.max_distractor_tokens,
+		mutation_prompt=args.mutation_prompt,
 		temperature=args.temperature,
 		seed_base=args.seed_base,
 		eval_mode=args.eval_mode,

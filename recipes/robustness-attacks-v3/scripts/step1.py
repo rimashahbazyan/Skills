@@ -47,12 +47,12 @@ _PASS_SEED = True
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
-def _load_mutation_prompt() -> dict:
-    with open(_PROMPTS_DIR / "mutation-prompt.yaml") as f:
+def _load_mutation_prompt(prompt_file: str = "mutation-prompt.yaml") -> dict:
+    with open(_PROMPTS_DIR / prompt_file) as f:
         return yaml.safe_load(f)
 
 
-_MUTATION_PROMPT = _load_mutation_prompt()
+_MUTATION_PROMPT = _load_mutation_prompt()  # overridden at runtime via --mutation-prompt
 
 # ==========================
 # --- Few-shot examples ----
@@ -161,7 +161,7 @@ def _format_examples(examples: List[Dict], source_display: str, target_display: 
     return "\n".join(lines)
 
 
-def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float, seed: int, max_distractor_tokens: int = 0) -> str:
+def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float, seed: int, max_distractor_tokens: int = 0, parent_distractor: str = "") -> str:
     """
     Call the LLM to mutate a distractor into a new type.
     Position remains the same; type changes.
@@ -174,13 +174,15 @@ def perflab_mutation_call(original_item: Dict, new_type: str, temperature: float
     examples = _load_few_shot_examples(source_type, new_type)
     examples_block = _format_examples(examples, source_display, target_display)
 
-    user_prompt = _MUTATION_PROMPT["user_template"].format(
+    format_kwargs = dict(
         examples_block=examples_block,
         source_display=source_display,
         distractor=original_item["distractor"],
         target_display=target_display,
         max_tokens=max_distractor_tokens if max_distractor_tokens > 0 else 500,
+        parent_distractor=parent_distractor or "N/A (first iteration)",
     )
+    user_prompt = _MUTATION_PROMPT["user_template"].format(**format_kwargs)
 
     messages = [
         {"role": "system", "content": (
@@ -274,7 +276,7 @@ def mutate_state(state: List[Dict], iteration_id: str, temperature: float, seed_
             f"source type={source_item['type']} ID={source_item['id']} -> {target_type}"
         )
 
-        new_text = perflab_mutation_call(source_item, target_type, temperature, seed, max_distractor_tokens)
+        new_text = perflab_mutation_call(source_item, target_type, temperature, seed, max_distractor_tokens, parent_distractor=item.get("distractor", ""))
 
         if max_distractor_tokens > 0:
             new_text = _truncate_to_tokens(new_text, max_distractor_tokens)
@@ -375,6 +377,14 @@ def main():
              "Recommended: 60 (matches few-shot target length).",
     )
     parser.add_argument(
+        "--mutation-prompt",
+        type=str,
+        default="mutation-prompt.yaml",
+        help="Filename of the mutation prompt YAML in prompts/ directory. "
+             "Default: mutation-prompt.yaml. Use mutation-prompt-with-parent.yaml "
+             "to include the parent distractor in the prompt.",
+    )
+    parser.add_argument(
         "--benchmark",
         type=str,
         default=None,
@@ -407,6 +417,12 @@ def main():
     if args.few_shot_dir:
         _FEW_SHOT_DIR = Path(args.few_shot_dir)
         print(f"Using few-shot examples from: {_FEW_SHOT_DIR}")
+
+    # Override mutation prompt if specified.
+    global _MUTATION_PROMPT
+    if args.mutation_prompt != "mutation-prompt.yaml":
+        _MUTATION_PROMPT = _load_mutation_prompt(args.mutation_prompt)
+        print(f"Using mutation prompt: {args.mutation_prompt}")
 
     # If a local model is requested, wait for the co-process vLLM server
     # (started by NeMo-Run alongside this job) and swap out the Azure client.

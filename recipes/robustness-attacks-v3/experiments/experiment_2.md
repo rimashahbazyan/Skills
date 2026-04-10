@@ -2,6 +2,12 @@
 
 **Hypothesis:** Using a stronger, instruction-following model (Claude Sonnet 4.5) as the mutator — instead of gpt-oss-120b — may produce higher-quality distractor mutations that better follow the mutation prompt's constraints (type transformation, conciseness, adversarial plausibility). This could lead to faster accuracy degradation per iteration.
 
+**Status:** PAUSED — iter 1-8 complete, needs relaunch to continue from iter 9
+
+**Cluster:** oci
+
+**Output path:** /lustre/fsw/portfolios/llmservice/users/rshahbazyan/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2
+
 **Changes:**
 - Added `--mutation-api-url`, `--mutation-api-model`, `--mutation-api-key-env` args to `step1.py` and `launch_attack.py`
 - Added `--few-shot-dir` arg to select which few-shot examples to use
@@ -11,17 +17,15 @@
 - `seed` parameter disabled for external APIs (not supported by all providers)
 - System prompt added to reduce refusals (~10 fallbacks across 8 iterations, all involving ENCRYPTED_TEXT)
 
-**Config:** Qwen3-8B eval target, Claude Sonnet 4.5 mutator via NVIDIA API, original few-shot examples, 8 GPUs eval, v3 pipeline, 50 iterations
+**Config:** Qwen3-8B eval target, Claude Sonnet 4.5 mutator via NVIDIA API, 8 GPUs eval, v3 pipeline, 50 iterations
 
-**Status:** PAUSED — iter 1-8 complete, needs relaunch to continue from iter 9
-**Cluster:** oci
-**Output path:** /lustre/fsw/portfolios/llmservice/users/rshahbazyan/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2
+**Few-shot examples:** original (v2, 16-514 tokens, inconsistent lengths)
 
 **Launch command:**
 ```bash
 NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK=1 python recipes/robustness-attacks-v3/launch_attack.py \
     --cluster oci \
-    --output-folder /lustre/fsw/portfolios/llmservice/users/rshahbazyan/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2 \
+    --output-folder /workspace/robustness-attacks/gpqa-diamond-qwen8b-v3-exp2 \
     --model-name /hf_models/Qwen3-8B \
     --iter-num 50 \
     --iter-batch-size 5 \
